@@ -1,0 +1,7 @@
+.env
+.venv/
+__pycache__/
+*.py[cod]
+data/bot.sqlite3*
+data/skyfield/
+reports/*.pdf
