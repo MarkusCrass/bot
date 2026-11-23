@@ -72,11 +72,8 @@ def subscription_keyboard() -> InlineKeyboardMarkup:
 
 
 def payment_keyboard() -> InlineKeyboardMarkup:
-    if PROVIDER_TOKEN:
-        label, callback_data = f"Оплатить {GUIDE_PRICE} ₽ и получить PDF", "buy_guide"
-    else:
-        # Explicit local test mode: no provider token means there can be no real charge.
-        label, callback_data = f"Оплатить {GUIDE_PRICE} ₽ (Тест)", "test_buy_guide"
+    label = f"Оплатить {GUIDE_PRICE} ₽"
+    callback_data = "buy_guide" if PROVIDER_TOKEN else "test_buy_guide"
     return InlineKeyboardMarkup(inline_keyboard=[[
         InlineKeyboardButton(text=label, callback_data=callback_data)
     ]])
@@ -151,15 +148,15 @@ async def geocode_city(city: str) -> tuple[float, float, str, str]:
 SIGN_NAMES = ["Овен", "Телец", "Близнецы", "Рак", "Лев", "Дева", "Весы", "Скорпион", "Стрелец", "Козерог", "Водолей", "Рыбы"]
 ASPECTS = [(0, "соединение"), (60, "секстиль"), (90, "квадрат"), (120, "трин"), (180, "оппозиция")]
 PLANETS = {
-    "sun": "Sun",
-    "mercury": "Mercury",
-    "venus": "Venus",
-    "mars": "Mars",
-    "jupiter barycenter": "Jupiter",
-    "saturn barycenter": "Saturn",
-    "uranus barycenter": "Uranus",
-    "neptune barycenter": "Neptune",
-    "pluto barycenter": "Pluto",
+    "sun": "Солнце",
+    "mercury": "Меркурий",
+    "venus": "Венера",
+    "mars": "Марс",
+    "jupiter barycenter": "Юпитер",
+    "saturn barycenter": "Сатурн",
+    "uranus barycenter": "Уран",
+    "neptune barycenter": "Нептун",
+    "pluto barycenter": "Плутон",
 }
 
 
@@ -458,7 +455,11 @@ def render_pdf(profile: dict[str, Any], sections: list[tuple[str, str]]) -> Path
 @router.message(CommandStart())
 async def start(message: Message, state: FSMContext, bot: Bot) -> None:
     await state.clear()
-    await message.answer("Привет! Я помогу расшифровать ваш <b>Лунный код</b> — персональный разбор вашей Луны в натальной карте.")
+    await message.answer(
+        f"Привет! Здесь можно получить <b>бесплатный мини-разбор натальной Луны</b>, "
+        f"а также приобрести полный персональный PDF-разбор на 18 разделов за <b>{GUIDE_PRICE} ₽</b> "
+        "— цифровой информационно-аналитический продукт."
+    )
     if await ensure_subscription(message, bot):
         await begin_intake(message, state)
 
@@ -565,7 +566,8 @@ def demo_report_sections(profile: dict[str, Any]) -> list[tuple[str, str]]:
 
 async def deliver_report(message: Message, bot: Bot, user_id: int, *, test_mode: bool = False) -> None:
     if test_mode:
-        await message.answer("Тестовый режим: деньги не списываются. Готовим демонстрационный PDF…")
+        await message.answer("Формируем ваш персональный PDF-разбор на 18 разделов, это займёт около 20–30 секунд...")
+        await message.answer("Тестовый режим: оплата не проводится и деньги не списываются. Без LLM_API_KEY будет отправлен демонстрационный вариант.")
     else:
         await message.answer("✅ Оплата получена! Готовим ваш персональный PDF-разбор, это займет около 30–40 секунд…")
     profile = await fetch_profile(user_id)
@@ -578,7 +580,7 @@ async def deliver_report(message: Message, bot: Bot, user_id: int, *, test_mode:
         else:
             sections = await generate_llm_report(profile)
         pdf_path = await asyncio.to_thread(render_pdf, profile, sections)
-        caption = "Демонстрационный PDF (тестовая покупка без списания) 🌙" if test_mode else "Ваш персональный разбор «Лунный код» 🌙"
+        caption = "Ваш полный персональный разбор «Лунный код» готов! 🌙"
         await message.answer_document(FSInputFile(pdf_path), caption=caption)
     except Exception:
         log.exception("PDF generation failed for user %s", user_id)
