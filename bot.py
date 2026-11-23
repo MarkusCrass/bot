@@ -371,9 +371,59 @@ def author_aspect_excerpts(profile: dict[str, Any], knowledge: dict[str, Any]) -
     return excerpts
 
 
+class LLMReportError(RuntimeError):
+    """The LLM failed to return a complete, valid report after the allowed retries."""
+
+
+def _parse_llm_sections(raw: str) -> list[dict[str, Any]]:
+    """Strip markdown wrappers and decode either a JSON object or an object array."""
+    cleaned = re.sub(r"```\s*(?:json)?", "", str(raw), flags=re.IGNORECASE).replace("```", "").strip()
+    first = cleaned.find("{")
+    last = cleaned.rfind("}")
+    if first < 0 or last < first:
+        raise ValueError("В ответе LLM не найдены JSON-объекты")
+
+    # The model may wrap its array in an object, or return comma-separated objects
+    # inside an array. Slice from the first opening to the last closing brace as a
+    # resilient fallback, then try decoding both a single object and an object list.
+    text = cleaned[cleaned.find("{"):cleaned.rfind("}") + 1]
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError as object_error:
+        try:
+            parsed = json.loads(f"[{text}]")
+        except json.JSONDecodeError as array_error:
+            raise ValueError("LLM вернула некорректный JSON") from array_error
+
+    if isinstance(parsed, dict) and isinstance(parsed.get("sections"), list):
+        parsed = parsed["sections"]
+    elif isinstance(parsed, dict):
+        parsed = [parsed]
+    if not isinstance(parsed, list):
+        raise ValueError("JSON-ответ LLM должен содержать список разделов")
+    return parsed
+
+
+def _validate_llm_sections(items: list[dict[str, Any]], headings: list[str]) -> list[tuple[str, str]]:
+    if len(items) != len(headings):
+        raise ValueError(f"LLM вернула {len(items)} разделов вместо {len(headings)}")
+    validated = []
+    for index, (expected_title, item) in enumerate(zip(headings, items), 1):
+        if not isinstance(item, dict) or not isinstance(item.get("text"), str):
+            raise ValueError(f"Некорректный формат в разделе {index}")
+        actual_title = re.sub(r"^\s*\d+[.)]\s*", "", str(item.get("title", ""))).strip()
+        if actual_title != expected_title:
+            raise ValueError(f"Нарушен порядок или заголовок раздела {index}: {actual_title!r}")
+        paragraphs = _paragraphs(item["text"])
+        if len(paragraphs) < 2 or any(len(paragraph.split()) < 40 for paragraph in paragraphs[:2]):
+            raise ValueError(f"Раздел {index} должен содержать два развёрнутых абзаца")
+        validated.append((expected_title, "\n\n".join(paragraphs)))
+    return validated
+
+
 async def generate_llm_report(profile: dict[str, Any]) -> list[tuple[str, str]]:
     if not LLM_API_KEY:
-        raise RuntimeError("LLM_API_KEY не настроен; персональный платный отчёт без LLM API не создаётся.")
+        raise LLMReportError("LLM_API_KEY не настроен")
     knowledge = load_knowledge()
     relaxation = knowledge.get("relaxation", {})
     relaxation_text = relaxation.get("text", "") if isinstance(relaxation, dict) else str(relaxation)
@@ -387,60 +437,107 @@ async def generate_llm_report(profile: dict[str, Any]) -> list[tuple[str, str]]:
         "авторские выдержки для рассчитанных аспектов": author_aspect_excerpts(profile, knowledge),
         "авторский блок расслабления": relaxation_text,
     }
-    prompt = (
-        "Составь глубокий, бережный, тёплый персональный астрологический разбор на русском языке для клиента, "
-        "чьё имя и точные положения карты приведены ниже. Авторские выдержки — единственный источник трактовок: "
-        "бережно опирайся на них, не цитируй длинными фрагментами и не придумывай другие положения карты. "
-        "Астрология подаётся как символический материал для саморефлексии, не как наука, диагноз или предсказание. "
-        "Верни строго JSON-массив из 18 объектов с полями title и text, без markdown и вступления. "
-        "Сохрани заголовки и их порядок точно как в списке. Для каждого пункта напиши ровно два содержательных "
-        "абзаца по 70–110 слов каждый, разделяя абзацы пустой строкой. Связывай общее значение темы с личными "
-        "потребностями клиента, его знаком, домом, фактически рассчитанными аспектами и авторским контекстом. "
-        "Не повторяй одни и те же советы между разделами; пиши конкретно, мягко и без категоричных утверждений.\n\n"
-        f"ДАННЫЕ И АВТОРСКИЙ КОНТЕКСТ:\n{json.dumps(context, ensure_ascii=False)}\n\n"
-        "18 РАЗДЕЛОВ:\n" + "\n".join(f"{index}. {title}" for index, title in enumerate(REPORT_HEADINGS, 1))
-    )
-    client = AsyncOpenAI(
-        api_key=LLM_API_KEY,
-        base_url=LLM_BASE_URL or None,
-        timeout=120.0,
-        max_retries=2,
-    )
+    client = None
+    generated: list[tuple[str, str]] = []
     try:
-        response = await client.chat.completions.create(
-            model=LLM_MODEL,
-            messages=[
-                {"role": "system", "content": "Ты бережный автор персональных лунных разборов и точно следуешь структуре JSON."},
-                {"role": "user", "content": prompt},
-            ],
-            temperature=0.7,
-            max_tokens=10000,
+        # Split the long report to keep each response well below common free-model limits.
+        client = AsyncOpenAI(
+            api_key=LLM_API_KEY,
+            base_url=LLM_BASE_URL or None,
+            timeout=120.0,
+            max_retries=0,
         )
+        for start in (0, 9):
+            expected = REPORT_HEADINGS[start:start + 9]
+            heading_list = "\n".join(
+                f"{index}. {title}" for index, title in enumerate(expected, start + 1)
+            )
+            prompt = (
+                "Составь глубокий, бережный персональный астрологический разбор на русском языке. "
+                "Авторские выдержки — единственный источник трактовок; не цитируй длинными фрагментами, "
+                "не придумывай положения карты и не выдавай астрологию за науку, диагноз или предсказание. "
+                "Верни строго JSON-массив объектов с полями title и text, без markdown. Сохрани точные "
+                "заголовки и порядок. Для каждого раздела напиши ровно два содержательных абзаца по 45–55 "
+                "слов, разделяя их пустой строкой. Связывай тему с потребностями клиента и только с "
+                "рассчитанными данными карты; не повторяй одни и те же советы.\n\n"
+                f"ДАННЫЕ И АВТОРСКИЙ КОНТЕКСТ:\n{json.dumps(context, ensure_ascii=False)}\n\n"
+                f"РАЗДЕЛЫ {start + 1}–{start + len(expected)} ИЗ 18:\n{heading_list}"
+            )
+            last_error: Exception | None = None
+            for attempt in range(1, 3):
+                try:
+                    response = await client.chat.completions.create(
+                        model=LLM_MODEL,
+                        messages=[
+                            {"role": "system", "content": "Ты бережный автор персональных лунных разборов и точно следуешь структуре JSON."},
+                            {"role": "user", "content": prompt},
+                        ],
+                        temperature=0.7,
+                        max_tokens=4000,
+                    )
+                    raw = response.choices[0].message.content or ""
+                    decoded = _parse_llm_sections(raw)
+                    generated.extend(_validate_llm_sections(decoded, expected))
+                    break
+                except Exception as exc:
+                    last_error = exc
+                    log.warning(
+                        "LLM report chunk %s-%s attempt %s/2 failed: %s",
+                        start + 1, start + len(expected), attempt, exc,
+                    )
+            else:
+                raise LLMReportError(
+                    f"Разделы {start + 1}–{start + len(expected)} не получены после двух попыток: {last_error}"
+                ) from last_error
+    except LLMReportError:
+        raise
+    except Exception as exc:
+        raise LLMReportError(f"Сбой LLM API: {exc}") from exc
     finally:
-        await client.close()
-    raw = response.choices[0].message.content or ""
-    try:
-        sections = json.loads(raw)
-    except json.JSONDecodeError:
-        found = re.search(r"\[.*\]", raw, re.S)
-        if not found:
-            raise RuntimeError("LLM вернула некорректный JSON")
-        sections = json.loads(found.group())
-    if not isinstance(sections, list) or len(sections) != len(REPORT_HEADINGS):
-        raise RuntimeError(f"LLM вернула {len(sections) if isinstance(sections, list) else 0} разделов вместо 18")
-    validated = []
-    for index, (expected_title, item) in enumerate(zip(REPORT_HEADINGS, sections), 1):
-        if not isinstance(item, dict) or not isinstance(item.get("text"), str):
-            raise RuntimeError(f"Некорректный формат в разделе {index}")
-        actual_title = re.sub(r"^\s*\d+[.)]\s*", "", str(item.get("title", ""))).strip()
-        if actual_title != expected_title:
-            raise RuntimeError(f"Нарушен порядок или заголовок раздела {index}: {actual_title!r}")
-        paragraphs = _paragraphs(item["text"])
-        if len(paragraphs) < 2 or any(len(paragraph.split()) < 40 for paragraph in paragraphs[:2]):
-            raise RuntimeError(f"Раздел {index} должен содержать два развёрнутых абзаца")
-        validated.append((expected_title, "\n\n".join(paragraphs)))
-    return validated
+        if client is not None:
+            try:
+                await client.close()
+            except Exception:
+                log.exception("Could not close LLM client")
+    return generated
 
+
+def generate_author_fallback(profile: dict[str, Any]) -> list[tuple[str, str]]:
+    """Build a source-only report when the LLM is unavailable; do not invent interpretations."""
+    knowledge = load_knowledge()
+    source_blocks: list[tuple[str, str]] = []
+    sign_text = pick(knowledge.get("signs"), profile.get("sign", ""))
+    house_text = pick(knowledge.get("houses"), str(profile.get("house", "")))
+    if sign_text:
+        source_blocks.append((f"Авторский текст: Луна в знаке {profile.get('sign', '')}", sign_text))
+    if house_text:
+        source_blocks.append((f"Авторский текст: Луна в {profile.get('house', '')} доме", house_text))
+    for excerpt in author_aspect_excerpts(profile, knowledge):
+        text = excerpt.get("авторская трактовка", "")
+        if text:
+            source_blocks.append((f"Авторский текст об аспекте {excerpt.get('рассчитанный аспект', '')}", text))
+    relaxation = knowledge.get("relaxation", {})
+    practices = relaxation.get("practices", {}) if isinstance(relaxation, dict) else {}
+    if isinstance(practices, dict):
+        for title, practice in practices.items():
+            practice_text = pick({title: practice}, title)
+            if practice_text:
+                source_blocks.append((f"Авторская практика: {title}", practice_text))
+    if not source_blocks:
+        raise RuntimeError("В базе знаний нет авторских текстов для резервного разбора")
+
+    fallback = []
+    for index, title in enumerate(REPORT_HEADINGS):
+        first_label, first_text = source_blocks[(index * 2) % len(source_blocks)]
+        second_label, second_text = source_blocks[(index * 2 + 1) % len(source_blocks)]
+        text = (
+            f"Резервный авторский материал для раздела «{title}». "
+            f"Ниже приведён исходный текст, связанный с рассчитанной картой: {first_label}.\n\n"
+            f"{first_text}\n\n"
+            f"Дополнительный фрагмент из базы знаний: {second_label}.\n\n{second_text}"
+        )
+        fallback.append((title, text))
+    return fallback
 
 def _font_paths() -> tuple[Path, Path, Path, Path]:
     override = os.getenv("PDF_FONT_PATH", "").strip()
@@ -833,27 +930,48 @@ async def deliver_report(message: Message, bot: Bot, user_id: int, *, test_mode:
         await message.answer("Не нашёл сохранённые данные карты. Напишите /start и свяжитесь с администратором.")
         return
     try:
-        # Both paid and preview flows use the configured LLM. There is deliberately no demo fallback.
-        sections = await generate_llm_report(profile)
+        try:
+            sections = await generate_llm_report(profile)
+        except LLMReportError as exc:
+            log.exception("LLM report failed for user %s; using author-text fallback", user_id)
+            sections = generate_author_fallback(profile)
+            await message.answer(
+                "Не удалось получить полный ответ от AI-сервиса. Чтобы вы не остались без материала, "
+                "PDF сформирован из авторских текстов для рассчитанных знака, дома и аспектов; "
+                "персональная синтезированная интерпретация временно недоступна."
+            )
+            if ADMIN_ID:
+                try:
+                    error_detail = html.escape(str(exc) or repr(exc))[:2500]
+                    await bot.send_message(
+                        ADMIN_ID,
+                        f"⚠️ LLM API не сформировал корректный отчёт для пользователя {user_id} после двух попыток. "
+                        f"Отправлен резервный PDF из авторских текстов.\n<code>{error_detail}</code>",
+                    )
+                except Exception:
+                    log.exception("Could not notify admin about LLM fallback for user %s", user_id)
         pdf_path = await asyncio.to_thread(render_pdf, profile, sections)
         await message.answer_document(
             FSInputFile(pdf_path),
-            caption="Ваш полный персональный разбор «Лунный код» готов! 🌙",
+            caption="Ваш персональный разбор «Лунный код» готов! 🌙",
         )
     except Exception as exc:
         log.exception("PDF generation failed for user %s", user_id)
         if test_mode:
-            await message.answer("Не удалось сформировать PDF-разбор через LLM API. Проверьте настройки и попробуйте позже.")
+            await message.answer("Не удалось сформировать PDF. Проверьте настройки и попробуйте позже.")
         else:
             await message.answer("Возникла техническая ошибка при создании PDF. Мы сохранили факт оплаты и скоро поможем вам.")
         if ADMIN_ID:
             error_detail = html.escape(str(exc) or repr(exc))[:2500]
-            await bot.send_message(
-                ADMIN_ID,
-                f"❌ Ошибка генерации PDF для пользователя {user_id}. "
-                f"{'Тестовая генерация.' if test_mode else 'Платёж сохранён; требуется повторная выдача.'}\n"
-                f"<code>{error_detail}</code>",
-            )
+            try:
+                await bot.send_message(
+                    ADMIN_ID,
+                    f"❌ Ошибка генерации PDF для пользователя {user_id}. "
+                    f"{'Тестовая генерация.' if test_mode else 'Платёж сохранён; требуется повторная выдача.'}\n"
+                    f"<code>{error_detail}</code>",
+                )
+            except Exception:
+                log.exception("Could not notify admin about PDF generation failure for user %s", user_id)
 
 
 @router.callback_query(F.data == "buy_guide")
