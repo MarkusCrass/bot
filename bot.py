@@ -20,7 +20,7 @@ import pytz
 from aiogram import Bot, Dispatcher, F, Router
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
-from aiogram.filters import CommandStart
+from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import (
@@ -31,6 +31,9 @@ from aiogram.types import (
     LabeledPrice,
     Message,
     PreCheckoutQuery,
+    ReplyKeyboardMarkup,
+    KeyboardButton,
+    BotCommand,
 )
 from dotenv import load_dotenv
 from geopy.geocoders import Nominatim
@@ -59,6 +62,11 @@ REPORT_DIR = ROOT / "reports"
 ASSET_DIR = ROOT / "assets"
 SKYFIELD_DATA_DIR = ROOT / "data" / "skyfield"
 
+FREE_CALC_LABEL = "🌙 Хочу разбор Луны (Бесплатно)"
+GUIDE_MENU_LABEL = f"📖 Что в полном гайде за {GUIDE_PRICE} ₽"
+SAVED_CALC_LABEL = "💫 Мой прошлый расчёт"
+CONTACT_LABEL = "👩‍💼 Задать вопрос астрологу"
+
 router = Router()
 class Intake(StatesGroup):
     name = State()
@@ -69,18 +77,23 @@ class Intake(StatesGroup):
 
 def subscription_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📢 Подписаться на канал", url=CHANNEL_URL)],
-        [InlineKeyboardButton(text="✅ Я подписался, получить разбор", callback_data="check_subscription")],
+        [InlineKeyboardButton(text="📢 1. Подписаться на канал", url=CHANNEL_URL)],
+        [InlineKeyboardButton(text="✅ 2. Я подписался — рассчитать бесплатно", callback_data="check_subscription")],
     ])
 
 
-def main_menu_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🌙 Рассчитать мой Лунный код (Бесплатно)", callback_data="calculate")],
-        [InlineKeyboardButton(text="📖 Что входит в полный PDF-разбор (18 разделов)", callback_data="show_sections")],
-        [InlineKeyboardButton(text="💫 Мои расчёты", callback_data="my_calculations")],
-        [InlineKeyboardButton(text="👩‍💼 Связаться с астрологом", url=CHANNEL_URL)],
-    ])
+def main_menu_keyboard() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text=FREE_CALC_LABEL)],
+            [KeyboardButton(text=GUIDE_MENU_LABEL)],
+            [KeyboardButton(text=SAVED_CALC_LABEL)],
+            [KeyboardButton(text=CONTACT_LABEL)],
+        ],
+        resize_keyboard=True,
+        is_persistent=True,
+        input_field_placeholder="Выберите, что хотите узнать",
+    )
 
 
 def menu_keyboard() -> InlineKeyboardMarkup:
@@ -106,11 +119,57 @@ def saved_calculation_keyboard() -> InlineKeyboardMarkup:
 
 
 def payment_keyboard() -> InlineKeyboardMarkup:
-    payment_callback = "buy_guide" if PROVIDER_TOKEN else "test_buy_guide"
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=f"💎 Получить полный PDF-разбор (18 разделов) — {GUIDE_PRICE} ₽", callback_data=payment_callback)],
-        [InlineKeyboardButton(text="📋 Посмотреть список всех 18 разделов", callback_data="show_sections")],
+        [InlineKeyboardButton(text=f"💎 Оплатить и скачать полный PDF — {GUIDE_PRICE} ₽", callback_data="buy_guide")],
+        [InlineKeyboardButton(text=GUIDE_MENU_LABEL, callback_data="show_sections")],
         [InlineKeyboardButton(text="🏠 В главное меню", callback_data="main_menu")],
+    ])
+
+
+def subscription_offer_text() -> str:
+    return (
+        "<b>Ваш личный Лунный код: как быстро восстанавливать силы и энергию 🌙</b>\n\n"
+        "В астрологии Солнце — это то, как мы проявляемся в мире, а Луна — наш внутренний мир, эмоции, "
+        "чувство безопасности и то, как мы на самом деле отдыхаем.\n\n"
+        "В бесплатном мини-разборе вы за 1 минуту узнаете:\n"
+        "• Ваш Знак и Дом Луны по точному времени и месту рождения;\n"
+        "• Ваши главные эмоциональные потребности (что даёт вам чувство опоры и спокойствия);\n"
+        "• Персональный способ расслабления: как именно вам снимать стресс и возвращать ресурс, когда нет сил.\n\n"
+        "Чтобы получить расчёт бесплатно, подпишитесь на наш Telegram-канал — там мы каждый день делимся "
+        "простыми подсказками по энергии и состоянию ✨"
+    )
+
+
+def full_guide_description_text() -> str:
+    return (
+        "<b>Полный персональный PDF-гайд «Лунный код» (18 глубоких разделов) 📖</b>\n\n"
+        "Это ваша личная инструкция к себе, составленная по вашей натальной карте на основе авторской методики. "
+        "Никаких общих гороскопов из интернета — только разбор ваших реальных реакций, привычек и сценариев.\n\n"
+        "Внутри красивого PDF-файла (10–15 страниц), который останется у вас навсегда, вы разберёте 18 сфер жизни:\n"
+        "• Эмоции и ресурс: как работает ваше подсознание, чего хочет ваш внутренний ребёнок и как перестать выгорать;\n"
+        "• Опора и безопасность: откуда берутся тревоги, бессознательные реакции на стресс и как возвращать себе спокойствие;\n"
+        "• Семья и отношения с мамой: влияние материнской фигуры, родовые сценарии, ваша уязвимость и способность принимать любовь;\n"
+        "• Дом и забота: как устроен ваш идеальный уют, в чём ваша сила в заботе о близких и как прийти к эмоциональной зрелости.\n\n"
+        "После оплаты бот за 20–30 секунд сформирует ваш именной PDF-файл и пришлёт его прямо в этот чат ✨"
+    )
+
+
+def guide_description_keyboard(has_birth_data: bool) -> InlineKeyboardMarkup:
+    if has_birth_data:
+        label = f"💎 Получить мой полный PDF-гайд — {GUIDE_PRICE} ₽"
+        callback_data = "buy_guide"
+    else:
+        label = f"🌙 Сначала ввести дату рождения и получить гайд ({GUIDE_PRICE} ₽)"
+        callback_data = "guide_start_intake"
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=label, callback_data=callback_data)],
+        [InlineKeyboardButton(text="🏠 Главное меню", callback_data="main_menu")],
+    ])
+
+
+def contact_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="👩‍💼 Перейти к астрологу", url=CHANNEL_URL)],
     ])
 
 
@@ -347,11 +406,6 @@ async def send_free_reading(message: Message, state: FSMContext, profile: dict[s
         f"<b>Аспекты Луны</b>\n{html.escape(aspects)}"
     )
     relaxation_text = f"<b>Блок «Расслабление»</b>\n{html.escape(relaxation)}"
-    if not PROVIDER_TOKEN:
-        relaxation_text += (
-            "\n\n<i>Реальная оплата пока не подключена: кнопка ниже запускает бесплатную тестовую генерацию. "
-            "Для полного текста необходимо настроить LLM_API_KEY.</i>"
-        )
     await message.answer(chart_text)
     await message.answer(relaxation_text, reply_markup=payment_keyboard())
     await state.clear()
@@ -738,14 +792,76 @@ def render_pdf(profile: dict[str, Any], sections: list[tuple[str, str]]) -> Path
     return path
 
 
+async def send_guide_description(message: Message, user_id: int) -> None:
+    profile = await fetch_profile(user_id)
+    await message.answer(
+        full_guide_description_text(),
+        reply_markup=guide_description_keyboard(bool(profile)),
+    )
+
+
+async def send_saved_calculation(message: Message, user_id: int) -> None:
+    profile = await fetch_profile(user_id)
+    if not profile:
+        await message.answer(
+            "Пока здесь нет вашего расчёта. Нажмите «🌙 Хочу разбор Луны (Бесплатно)», и мы всё посчитаем вместе.",
+            reply_markup=main_menu_keyboard(),
+        )
+        return
+    aspects = "\n".join(f"• {html.escape(str(item))}" for item in profile.get("aspects", [])) or "—"
+    await message.answer(
+        f"💫 <b>Ваш прошлый расчёт</b>\nИмя: {html.escape(profile['name'])}\n"
+        f"Дата и время: {profile['date']} · {profile['time']}\nМесто: {html.escape(profile.get('city') or '—')}\n"
+        f"Луна: {html.escape(profile['sign'])}, {profile['house']} дом\nАспекты: {aspects}",
+        reply_markup=saved_calculation_keyboard(),
+    )
+
+
+async def show_subscription_offer(message: Message) -> None:
+    await message.answer(subscription_offer_text(), reply_markup=subscription_keyboard())
+
+
 @router.message(CommandStart())
 async def start(message: Message, state: FSMContext) -> None:
     await state.clear()
     await message.answer(
-        f"Привет! Здесь можно получить <b>бесплатный мини-разбор натальной Луны</b>, "
-        f"а также приобрести полный персональный PDF-разбор на 18 разделов за <b>{GUIDE_PRICE} ₽</b> "
-        "— цифровой информационно-аналитический продукт.\n\nВыберите, с чего начнём:",
+        "Привет! 🌙 Здесь вы узнаете, что помогает именно вам отдыхать, восстанавливать силы и чувствовать опору.\n\n"
+        "Выберите нужный пункт в меню внизу экрана:",
         reply_markup=main_menu_keyboard(),
+    )
+
+
+@router.message(Command("guide"))
+async def guide_command(message: Message, state: FSMContext) -> None:
+    await state.clear()
+    await message.answer("Меню Лунного кода всегда внизу экрана 🌙", reply_markup=main_menu_keyboard())
+    await send_guide_description(message, message.from_user.id)
+
+
+@router.message(F.text == FREE_CALC_LABEL)
+async def free_calculation_menu(message: Message, state: FSMContext) -> None:
+    await state.clear()
+    await show_subscription_offer(message)
+
+
+@router.message(F.text == GUIDE_MENU_LABEL)
+async def guide_menu(message: Message, state: FSMContext) -> None:
+    await state.clear()
+    await send_guide_description(message, message.from_user.id)
+
+
+@router.message(F.text == SAVED_CALC_LABEL)
+async def saved_calculation_menu(message: Message, state: FSMContext) -> None:
+    await state.clear()
+    await send_saved_calculation(message, message.from_user.id)
+
+
+@router.message(F.text == CONTACT_LABEL)
+async def contact_menu(message: Message, state: FSMContext) -> None:
+    await state.clear()
+    await message.answer(
+        "Конечно 💛 Нажмите на кнопку ниже, чтобы перейти к астрологу и задать свой вопрос.",
+        reply_markup=contact_keyboard(),
     )
 
 
@@ -762,25 +878,24 @@ async def ask_for_calculation(message: Message, user_id: int, state: FSMContext)
 
 
 @router.callback_query(F.data == "calculate")
-async def calculate_callback(callback: CallbackQuery, state: FSMContext, bot: Bot) -> None:
+async def calculate_callback(callback: CallbackQuery) -> None:
     await callback.answer()
-    if not await is_subscribed(bot, callback.from_user.id):
-        await callback.message.answer(
-            "Чтобы получить бесплатный расчёт, подпишитесь на канал и затем подтвердите подписку.",
-            reply_markup=subscription_keyboard(),
-        )
-        return
-    await ask_for_calculation(callback.message, callback.from_user.id, state)
+    await show_subscription_offer(callback.message)
 
 
 @router.callback_query(F.data == "check_subscription")
 async def check_subscription(callback: CallbackQuery, state: FSMContext, bot: Bot) -> None:
     if await is_subscribed(bot, callback.from_user.id):
         await callback.answer("Подписка подтверждена")
-        await callback.message.answer("Спасибо, подписка подтверждена! Продолжаем 🌙")
-        await ask_for_calculation(callback.message, callback.from_user.id, state)
+        await callback.message.answer("Отлично, подписка подтверждена! Начнём с пары простых вопросов 🌙")
+        await state.clear()
+        await begin_intake(callback.message, state)
     else:
-        await callback.answer("Подписка пока не найдена", show_alert=True)
+        await callback.answer()
+        await callback.message.answer(
+            "Пока не вижу подписку. Подпишитесь на канал и нажмите кнопку проверки ещё раз — расчёт бесплатный ✨",
+            reply_markup=subscription_keyboard(),
+        )
 
 
 @router.callback_query(F.data == "reuse_profile")
@@ -804,25 +919,21 @@ async def enter_new_profile(callback: CallbackQuery, state: FSMContext) -> None:
 @router.callback_query(F.data == "my_calculations")
 async def my_calculations(callback: CallbackQuery) -> None:
     await callback.answer()
-    profile = await fetch_profile(callback.from_user.id)
-    if not profile:
-        await callback.message.answer("Пока нет сохранённых расчётов. Нажмите «Рассчитать мой Лунный код», чтобы создать первый.", reply_markup=menu_keyboard())
-        return
-    aspects = "\n".join(f"• {html.escape(str(item))}" for item in profile.get("aspects", [])) or "—"
-    await callback.message.answer(
-        f"💫 <b>Ваш расчёт</b>\nИмя: {html.escape(profile['name'])}\n"
-        f"Дата и время: {profile['date']} · {profile['time']}\nМесто: {html.escape(profile.get('city') or '—')}\n"
-        f"Часовой пояс: {html.escape(profile.get('timezone') or '—')}\n"
-        f"Луна: {html.escape(profile['sign'])}, {profile['house']} дом\nАспекты: {aspects}",
-        reply_markup=saved_calculation_keyboard(),
-    )
+    await send_saved_calculation(callback.message, callback.from_user.id)
 
 
 @router.callback_query(F.data == "show_sections")
 async def show_sections(callback: CallbackQuery) -> None:
     await callback.answer()
-    listing = "\n".join(f"{number}. {title}" for number, title in enumerate(REPORT_HEADINGS, 1))
-    await callback.message.answer(f"<b>Полный PDF-разбор включает 18 разделов:</b>\n\n{listing}", reply_markup=menu_keyboard())
+    await send_guide_description(callback.message, callback.from_user.id)
+
+
+@router.callback_query(F.data == "guide_start_intake")
+async def guide_start_intake(callback: CallbackQuery, state: FSMContext) -> None:
+    await callback.answer()
+    await callback.message.answer("Сначала узнаем ваши данные рождения — так гайд будет именно о вас.")
+    await state.clear()
+    await begin_intake(callback.message, state)
 
 
 @router.callback_query(F.data == "main_menu")
@@ -924,10 +1035,13 @@ async def deliver_report(message: Message, bot: Bot, user_id: int, *, test_mode:
     if test_mode:
         await message.answer("Формируем ваш персональный PDF-разбор на 18 разделов, это займёт около 20–30 секунд...")
     else:
-        await message.answer("✅ Оплата получена! Готовим ваш персональный PDF-разбор, это займет около 30–40 секунд…")
+        await message.answer("✅ Оплата получена! Готовим ваш именной PDF-гайд — это займёт около 20–30 секунд…")
     profile = await fetch_profile(user_id)
     if not profile:
-        await message.answer("Не нашёл сохранённые данные карты. Напишите /start и свяжитесь с администратором.")
+        await message.answer(
+            "Чтобы подготовить именной гайд, сначала заполните короткую анкету рождения 🌙",
+            reply_markup=main_menu_keyboard(),
+        )
         return
     try:
         try:
@@ -952,10 +1066,9 @@ async def deliver_report(message: Message, bot: Bot, user_id: int, *, test_mode:
         )
     except Exception as exc:
         log.exception("PDF generation failed for user %s", user_id)
-        if test_mode:
-            await message.answer("Не удалось сформировать PDF. Проверьте настройки и попробуйте позже.")
-        else:
-            await message.answer("Возникла техническая ошибка при создании PDF. Мы сохранили факт оплаты и скоро поможем вам.")
+        await message.answer(
+            "Похоже, файл задерживается. Я уже передал информацию астрологу — вам помогут получить гайд 💛"
+        )
         if ADMIN_ID:
             error_detail = html.escape(str(exc) or repr(exc))[:2500]
             try:
@@ -969,45 +1082,45 @@ async def deliver_report(message: Message, bot: Bot, user_id: int, *, test_mode:
                 log.exception("Could not notify admin about PDF generation failure for user %s", user_id)
 
 
-@router.callback_query(F.data == "buy_guide")
-async def buy_guide(callback: CallbackQuery, bot: Bot) -> None:
+async def begin_guide_purchase(callback: CallbackQuery, bot: Bot, state: FSMContext) -> None:
     await callback.answer()
-    if not await is_subscribed(bot, callback.from_user.id):
-        await callback.message.answer("Для покупки и получения разбора нужна подписка на канал.", reply_markup=subscription_keyboard())
-        return
-    if not PROVIDER_TOKEN:
-        await callback.message.answer("Реальная оплата не настроена. Используйте тестовую кнопку для проверки PDF.")
-        return
     profile = await fetch_profile(callback.from_user.id)
     if not profile:
-        await callback.message.answer("Сначала пройдите короткую настройку: отправьте /start.")
+        await callback.message.answer("Сначала узнаем ваши данные рождения — и подготовим гайд лично для вас 🌙")
+        await state.clear()
+        await begin_intake(callback.message, state)
+        return
+    if not PROVIDER_TOKEN:
+        await callback.message.answer(
+            "Чтобы оформить персональный гайд, нажмите кнопку ниже — астролог поможет с заказом 💛",
+            reply_markup=contact_keyboard(),
+        )
         return
     await bot.send_invoice(
-        chat_id=callback.from_user.id, title="Персональный PDF-разбор «Лунный код»",
-        description="Глубокий разбор Луны по 18 пунктам. PDF-файл на русском языке.",
+        chat_id=callback.from_user.id, title="Персональный PDF-гайд «Лунный код»",
+        description="Персональный разбор Луны по 18 разделам. Именной PDF-файл на русском языке.",
         payload=f"lunar-guide:{callback.from_user.id}", provider_token=PROVIDER_TOKEN,
-        currency="RUB", prices=[LabeledPrice(label="Персональный PDF-разбор", amount=GUIDE_PRICE * 100)],
+        currency="RUB", prices=[LabeledPrice(label="Персональный PDF-гайд", amount=GUIDE_PRICE * 100)],
         start_parameter="lunar-code-guide",
     )
 
 
+@router.callback_query(F.data == "buy_guide")
+async def buy_guide(callback: CallbackQuery, bot: Bot, state: FSMContext) -> None:
+    await begin_guide_purchase(callback, bot, state)
+
+
 @router.callback_query(F.data == "test_buy_guide")
-async def test_buy_guide(callback: CallbackQuery, bot: Bot) -> None:
-    await callback.answer()
-    if PROVIDER_TOKEN:
-        await callback.message.answer("Тестовая покупка доступна только когда PROVIDER_TOKEN не задан.")
-        return
-    if not await is_subscribed(bot, callback.from_user.id):
-        await callback.message.answer("Для получения разбора нужна подписка на канал.", reply_markup=subscription_keyboard())
-        return
-    await deliver_report(callback.message, bot, callback.from_user.id, test_mode=True)
+async def test_buy_guide(callback: CallbackQuery, bot: Bot, state: FSMContext) -> None:
+    # Accept older inline buttons too; route them through the same friendly checkout flow.
+    await begin_guide_purchase(callback, bot, state)
 
 
 @router.pre_checkout_query()
 async def pre_checkout(query: PreCheckoutQuery) -> None:
     expected_payload = f"lunar-guide:{query.from_user.id}"
     if query.invoice_payload != expected_payload or query.currency != "RUB" or query.total_amount != GUIDE_PRICE * 100:
-        await query.answer(ok=False, error_message="Не удалось проверить счет. Напишите нам, пожалуйста.")
+        await query.answer(ok=False, error_message="Не получилось подтвердить оплату. Напишите астрологу — поможем завершить заказ.")
         return
     await query.answer(ok=True)
 
@@ -1025,6 +1138,15 @@ async def successful_payment(message: Message, bot: Bot) -> None:
     await deliver_report(message, bot, message.from_user.id)
 
 
+@router.message()
+async def automatic_entry_keyboard(message: Message) -> None:
+    await message.answer(
+        "Здравствуйте! 🌙 Я помогу узнать, что возвращает вам силы и чувство опоры. "
+        "Выберите нужный пункт в меню внизу экрана:",
+        reply_markup=main_menu_keyboard(),
+    )
+
+
 async def main() -> None:
     global BOT_TOKEN, LLM_API_KEY, LLM_BASE_URL, LLM_MODEL
     load_dotenv(ROOT / ".env", override=True)
@@ -1036,6 +1158,13 @@ async def main() -> None:
         raise RuntimeError("Заполните BOT_TOKEN в .env")
     await init_db()
     bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+    try:
+        await bot.set_my_commands([
+            BotCommand(command="start", description="Главное меню и расчёт"),
+            BotCommand(command="guide", description="Что входит в полный гайд"),
+        ])
+    except Exception:
+        log.exception("Could not register Telegram bot commands")
     dp = Dispatcher()
     dp.include_router(router)
     try:
