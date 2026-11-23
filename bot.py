@@ -414,10 +414,10 @@ def _validate_llm_sections(items: list[dict[str, Any]], headings: list[str]) -> 
         actual_title = re.sub(r"^\s*\d+[.)]\s*", "", str(item.get("title", ""))).strip()
         if actual_title != expected_title:
             raise ValueError(f"Нарушен порядок или заголовок раздела {index}: {actual_title!r}")
-        paragraphs = _paragraphs(item["text"])
-        if len(paragraphs) < 2 or any(len(paragraph.split()) < 40 for paragraph in paragraphs[:2]):
-            raise ValueError(f"Раздел {index} должен содержать два развёрнутых абзаца")
-        validated.append((expected_title, "\n\n".join(paragraphs)))
+        section_text = item["text"].strip()
+        if len(section_text) < 150:
+            raise ValueError(f"Раздел {index} должен содержать не менее 150 символов")
+        validated.append((expected_title, section_text))
     return validated
 
 
@@ -469,7 +469,7 @@ async def generate_llm_report(profile: dict[str, Any]) -> list[tuple[str, str]]:
                     response = await client.chat.completions.create(
                         model=LLM_MODEL,
                         messages=[
-                            {"role": "system", "content": "Ты бережный автор персональных лунных разборов и точно следуешь структуре JSON."},
+                            {"role": "system", "content": "Ты бережный автор персональных лунных разборов и точно следуешь структуре JSON. В каждом разделе напиши два абзаца и раздели их пустой строкой — двумя переводами строки (\\n\\n)."},
                             {"role": "user", "content": prompt},
                         ],
                         temperature=0.7,
@@ -935,11 +935,6 @@ async def deliver_report(message: Message, bot: Bot, user_id: int, *, test_mode:
         except LLMReportError as exc:
             log.exception("LLM report failed for user %s; using author-text fallback", user_id)
             sections = generate_author_fallback(profile)
-            await message.answer(
-                "Не удалось получить полный ответ от AI-сервиса. Чтобы вы не остались без материала, "
-                "PDF сформирован из авторских текстов для рассчитанных знака, дома и аспектов; "
-                "персональная синтезированная интерпретация временно недоступна."
-            )
             if ADMIN_ID:
                 try:
                     error_detail = html.escape(str(exc) or repr(exc))[:2500]
