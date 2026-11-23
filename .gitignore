@@ -1,0 +1,5 @@
+.env
+__pycache__/
+*.py[cod]
+data/bot.sqlite3*
+reports/*.pdf

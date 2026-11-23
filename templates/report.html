@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<style>
+@page { size: A4; margin: 22mm 19mm 22mm; @bottom-center { content: "ЛУННЫЙ КОД  ·  персональный разбор  ·  " counter(page); color: #8b829c; font: 9pt sans-serif; } }
+* { box-sizing: border-box; }
+body { color: #28233a; font-family: "DejaVu Sans", sans-serif; font-size: 10.5pt; line-height: 1.72; }
+.cover { page-break-after: always; min-height: 245mm; margin: -22mm -19mm; padding: 30mm 24mm; color: #fff; background: #211b35; position: relative; }
+.cover:after { content: ""; position: absolute; width: 180mm; height: 180mm; right: -70mm; bottom: -45mm; border: 1px solid rgba(230,205,156,.35); border-radius: 50%; box-shadow: 0 0 0 15mm rgba(230,205,156,.05), 0 0 0 33mm rgba(230,205,156,.04); }
+.brand { color: #e8cf9d; text-transform: uppercase; letter-spacing: 5px; font-size: 10pt; }
+.moon { margin-top: 40mm; font-size: 42pt; color: #e8cf9d; }
+h1 { font-weight: 400; font-size: 34pt; line-height: 1.2; margin: 8mm 0 5mm; }
+.cover .subtitle { color: #d2cadd; font-size: 13pt; max-width: 130mm; }
+.cover .rule { height: 1px; width: 32mm; background: #e8cf9d; margin: 12mm 0; }
+.meta { color: #d2cadd; line-height: 2.1; font-size: 11pt; }
+.meta b { color: #fff; font-weight: 500; }
+.intro { color: #635b70; font-size: 11pt; padding-bottom: 4mm; border-bottom: 1px solid #e9e3ef; }
+.chapter { page-break-inside: avoid; padding: 5mm 0 4mm; border-bottom: 1px solid #ece8f0; }
+.chapter-no { color: #a2834f; font-size: 9pt; letter-spacing: 2px; }
+h2 { color: #302744; font-size: 17pt; line-height: 1.35; margin: 1mm 0 3mm; font-weight: 500; }
+.chapter p { margin: 0; white-space: normal; }
+.footnote { margin-top: 12mm; color: #837c8e; font-size: 8.5pt; }
+</style>
+</head>
+<body>
+<div class="cover">
+  <div class="brand">Лунный код</div>
+  <div class="moon">☾</div>
+  <h1>Ваша Луна.<br>Ваш внутренний мир.</h1>
+  <div class="subtitle">Персональный путеводитель по эмоциональным потребностям, опорам и внутренним реакциям.</div>
+  <div class="rule"></div>
+  <div class="meta"><b>{{NAME}}</b><br>Луна в знаке {{SIGN}} · {{HOUSE}} дом<br>Рождение: {{BIRTH_DATE}}, {{BIRTH_TIME}}</div>
+</div>
+<p class="intro">Этот разбор создан на основе указанных вами данных рождения. Используйте его как пространство для самонаблюдения и бережного диалога с собой.</p>
+{{SECTIONS}}
+<div class="footnote">Положения карты рассчитаны астрологическим программным обеспечением. Астрологические трактовки носят ознакомительный характер и не являются медицинской или психологической диагностикой.</div>
+</body>
+</html>
