@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import re
+import time
 from datetime import date, datetime, timezone as dt_timezone
 from functools import lru_cache
 from pathlib import Path
@@ -39,7 +40,7 @@ from timezonefinderL import TimezoneFinder
 from fpdf import FPDF
 
 ROOT = Path(__file__).resolve().parent
-load_dotenv(ROOT / ".env")
+load_dotenv(ROOT / ".env", override=True)
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("lunar_code")
 
@@ -51,6 +52,7 @@ PROVIDER_TOKEN = os.getenv("PROVIDER_TOKEN", "")
 GUIDE_PRICE = int(os.getenv("GUIDE_PRICE", "499") or 499)
 LLM_API_KEY = os.getenv("LLM_API_KEY", "")
 LLM_BASE_URL = os.getenv("LLM_BASE_URL", "")
+LLM_MODEL = os.getenv("LLM_MODEL", "gpt-4o-mini")
 DB_PATH = ROOT / "data" / "bot.sqlite3"
 KNOWLEDGE_PATH = ROOT / "data" / "moon_knowledge.json"
 REPORT_DIR = ROOT / "reports"
@@ -307,6 +309,9 @@ async def send_free_reading(message: Message, state: FSMContext, profile: dict[s
             f"<b>Луна в {profile['house']} доме</b>\n{html.escape(house_text)}\n\n"
             f"<b>Аспекты Луны</b>\n{html.escape(aspects)}\n\n"
             f"<b>Блок «Расслабление»</b>\n{html.escape(relaxation)}")
+    if not PROVIDER_TOKEN:
+        text += ("\n\n<i>Реальная оплата пока не подключена: кнопка ниже запускает тестовую генерацию без списания. "
+                 "Без LLM_API_KEY результат будет демонстрационным.</i>")
     await message.answer(text, reply_markup=payment_keyboard())
     await state.clear()
 
@@ -330,7 +335,7 @@ async def generate_llm_report(profile: dict[str, Any]) -> list[tuple[str, str]]:
               "Пункты: " + "\n".join(f"{i+1}. {title}" for i, title in enumerate(headings)))
     client = AsyncOpenAI(api_key=LLM_API_KEY, base_url=LLM_BASE_URL or None)
     response = await client.chat.completions.create(
-        model=os.getenv("LLM_MODEL", "gpt-4o-mini"),
+        model=LLM_MODEL,
         messages=[{"role": "system", "content": "Ты опытный редактор персональных астрологических материалов."}, {"role": "user", "content": prompt}],
         temperature=0.7,
     )
@@ -447,7 +452,7 @@ def render_pdf(profile: dict[str, Any], sections: list[tuple[str, str]]) -> Path
     pdf.multi_cell(0, 5, "Астрологические трактовки носят ознакомительный характер и не являются научной, медицинской или психологической диагностикой.", new_x="LMARGIN", new_y="NEXT")
 
     REPORT_DIR.mkdir(parents=True, exist_ok=True)
-    path = REPORT_DIR / f"report_{int(profile['user_id'])}.pdf"
+    path = REPORT_DIR / f"report_{int(profile['user_id'])}_{int(time.time())}.pdf"
     pdf.output(str(path))
     return path
 
@@ -567,7 +572,6 @@ def demo_report_sections(profile: dict[str, Any]) -> list[tuple[str, str]]:
 async def deliver_report(message: Message, bot: Bot, user_id: int, *, test_mode: bool = False) -> None:
     if test_mode:
         await message.answer("Формируем ваш персональный PDF-разбор на 18 разделов, это займёт около 20–30 секунд...")
-        await message.answer("Тестовый режим: оплата не проводится и деньги не списываются. Без LLM_API_KEY будет отправлен демонстрационный вариант.")
     else:
         await message.answer("✅ Оплата получена! Готовим ваш персональный PDF-разбор, это займет около 30–40 секунд…")
     profile = await fetch_profile(user_id)
@@ -649,6 +653,12 @@ async def successful_payment(message: Message, bot: Bot) -> None:
 
 
 async def main() -> None:
+    global BOT_TOKEN, LLM_API_KEY, LLM_BASE_URL, LLM_MODEL
+    load_dotenv(ROOT / ".env", override=True)
+    BOT_TOKEN = os.getenv("BOT_TOKEN", "")
+    LLM_API_KEY = os.getenv("LLM_API_KEY", "")
+    LLM_BASE_URL = os.getenv("LLM_BASE_URL", "")
+    LLM_MODEL = os.getenv("LLM_MODEL", "gpt-4o-mini")
     if not BOT_TOKEN:
         raise RuntimeError("Заполните BOT_TOKEN в .env")
     await init_db()
