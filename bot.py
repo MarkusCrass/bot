@@ -51,8 +51,12 @@ BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 CHANNEL_ID = os.getenv("CHANNEL_ID", "")
 CHANNEL_URL = os.getenv("CHANNEL_URL", "")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "0") or 0)
+ASTROLOGER_ID = int(os.getenv("ASTROLOGER_ID", "0") or 0)
+ASTROLOGER_USERNAME = os.getenv("ASTROLOGER_USERNAME", "").strip()
 PROVIDER_TOKEN = os.getenv("PROVIDER_TOKEN", "")
 GUIDE_PRICE = int(os.getenv("GUIDE_PRICE", "499") or 499)
+CONSULT_PRICE = int(os.getenv("CONSULT_PRICE", "1500") or 1500)
+CONSULT_PRICE_LABEL = f"{CONSULT_PRICE:,}".replace(",", " ")
 LLM_API_KEY = os.getenv("LLM_API_KEY", "")
 LLM_BASE_URL = os.getenv("LLM_BASE_URL", "")
 LLM_MODEL = os.getenv("LLM_MODEL", "gpt-4o-mini")
@@ -66,6 +70,7 @@ FREE_CALC_LABEL = "🌙 Хочу разбор Луны (Бесплатно)"
 GUIDE_MENU_LABEL = f"📖 Что в полном гайде за {GUIDE_PRICE} ₽"
 SAVED_CALC_LABEL = "💫 Мой прошлый расчёт"
 CONTACT_LABEL = "👩‍💼 Задать вопрос астрологу"
+CONSULT_MENU_LABEL = f"🔮 Личный разбор с астрологом — {CONSULT_PRICE_LABEL} ₽"
 
 router = Router()
 class Intake(StatesGroup):
@@ -88,6 +93,7 @@ def main_menu_keyboard() -> ReplyKeyboardMarkup:
             [KeyboardButton(text=FREE_CALC_LABEL)],
             [KeyboardButton(text=GUIDE_MENU_LABEL)],
             [KeyboardButton(text=SAVED_CALC_LABEL)],
+            [KeyboardButton(text=CONSULT_MENU_LABEL)],
             [KeyboardButton(text=CONTACT_LABEL)],
         ],
         resize_keyboard=True,
@@ -171,6 +177,41 @@ def contact_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="👩‍💼 Перейти к астрологу", url=CHANNEL_URL)],
     ])
+
+
+def consultation_offer_text() -> str:
+    return (
+        "<b>Хотите разобрать ваш Лунный код лично с астрологом и получить пошаговый план действий? 🔮</b>\n\n"
+        "PDF-гайд даёт глубокую базу, но если у вас остались вопросы или вы хотите применить эти знания "
+        "к своей текущей жизненной ситуации, приглашаем на персональную разбор-консультацию в чате с астрологом.\n\n"
+        "<b>Что мы разберём лично для вас:</b>\n"
+        "• Глубокий анализ вашей Луны: детальный разбор по знаку, дому и всем аспектам натальной карты;\n"
+        "• Компенсаторика аспектов: конкретные, реальные действия в повседневной жизни — как вывести вашу Луну в плюс и убрать напряжение;\n"
+        "• Прогрессивная Луна (прогноз на сейчас): в каком знаке и доме ваша Луна идёт в прогрессиях прямо сейчас и что важно добавить в жизнь в текущий период.\n\n"
+        "<b>Формат:</b> персональный разбор и ответы на ваши вопросы в личном чате с астрологом.\n"
+        f"<b>Стоимость:</b> {CONSULT_PRICE_LABEL} ₽"
+    )
+
+
+def consultation_offer_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(
+            text=f"💳 Оплатить консультацию — {CONSULT_PRICE_LABEL} ₽",
+            callback_data="buy_consultation",
+        )],
+        [InlineKeyboardButton(text="🏠 В главное меню", callback_data="main_menu")],
+    ])
+
+
+def astrologer_chat_url() -> str:
+    username = ASTROLOGER_USERNAME.strip().lstrip("@").strip("/")
+    return f"https://t.me/{username}" if username else CHANNEL_URL
+
+
+def consultation_success_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="💬 Перейти в чат с астрологом", url=astrologer_chat_url()),
+    ]])
 
 
 async def is_subscribed(bot: Bot, user_id: int) -> bool:
@@ -800,6 +841,13 @@ async def send_guide_description(message: Message, user_id: int) -> None:
     )
 
 
+async def send_consultation_offer(message: Message) -> None:
+    await message.answer(
+        consultation_offer_text(),
+        reply_markup=consultation_offer_keyboard(),
+    )
+
+
 async def send_saved_calculation(message: Message, user_id: int) -> None:
     profile = await fetch_profile(user_id)
     if not profile:
@@ -854,6 +902,12 @@ async def guide_menu(message: Message, state: FSMContext) -> None:
 async def saved_calculation_menu(message: Message, state: FSMContext) -> None:
     await state.clear()
     await send_saved_calculation(message, message.from_user.id)
+
+
+@router.message(F.text == CONSULT_MENU_LABEL)
+async def consultation_menu(message: Message, state: FSMContext) -> None:
+    await state.clear()
+    await send_consultation_offer(message)
 
 
 @router.message(F.text == CONTACT_LABEL)
@@ -1064,6 +1118,12 @@ async def deliver_report(message: Message, bot: Bot, user_id: int, *, test_mode:
             FSInputFile(pdf_path),
             caption="Ваш персональный разбор «Лунный код» готов! 🌙",
         )
+        if not test_mode:
+            await asyncio.sleep(2.5)
+            try:
+                await send_consultation_offer(message)
+            except Exception:
+                log.exception("Could not send consultation offer after report delivery to user %s", user_id)
     except Exception as exc:
         log.exception("PDF generation failed for user %s", user_id)
         await message.answer(
@@ -1116,26 +1176,124 @@ async def test_buy_guide(callback: CallbackQuery, bot: Bot, state: FSMContext) -
     await begin_guide_purchase(callback, bot, state)
 
 
+@router.callback_query(F.data == "buy_consultation")
+async def buy_consultation(callback: CallbackQuery, bot: Bot) -> None:
+    await callback.answer()
+    profile = await fetch_profile(callback.from_user.id)
+    if not profile:
+        await callback.message.answer(
+            "Чтобы консультация была сразу по вашей карте, сначала получите бесплатный расчёт Луны 🌙",
+            reply_markup=main_menu_keyboard(),
+        )
+        return
+    if not PROVIDER_TOKEN:
+        await callback.message.answer(
+            "Чтобы записаться на персональную консультацию, нажмите кнопку ниже и напишите астрологу 💛",
+            reply_markup=contact_keyboard(),
+        )
+        return
+    await bot.send_invoice(
+        chat_id=callback.from_user.id,
+        title="Персональная разбор-консультация по Лунному коду",
+        description="Личный разбор карты и ответы на ваши вопросы в чате с астрологом.",
+        payload=f"lunar-consult:{callback.from_user.id}",
+        provider_token=PROVIDER_TOKEN,
+        currency="RUB",
+        prices=[LabeledPrice(label="Личная консультация астролога", amount=CONSULT_PRICE * 100)],
+        start_parameter="lunar-code-consultation",
+    )
+
+
 @router.pre_checkout_query()
 async def pre_checkout(query: PreCheckoutQuery) -> None:
-    expected_payload = f"lunar-guide:{query.from_user.id}"
-    if query.invoice_payload != expected_payload or query.currency != "RUB" or query.total_amount != GUIDE_PRICE * 100:
+    expected_guide = f"lunar-guide:{query.from_user.id}"
+    expected_consultation = f"lunar-consult:{query.from_user.id}"
+    expected_amount = {
+        expected_guide: GUIDE_PRICE * 100,
+        expected_consultation: CONSULT_PRICE * 100,
+    }.get(query.invoice_payload)
+    if expected_amount is None or query.currency != "RUB" or query.total_amount != expected_amount:
         await query.answer(ok=False, error_message="Не получилось подтвердить оплату. Напишите астрологу — поможем завершить заказ.")
         return
     await query.answer(ok=True)
 
 
+async def record_successful_payment(payment: Any, user_id: int) -> bool:
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            "INSERT OR IGNORE INTO payments(telegram_payment_charge_id,user_id,total_amount,currency) VALUES(?,?,?,?)",
+            (payment.telegram_payment_charge_id, user_id, payment.total_amount, payment.currency),
+        )
+        await db.commit()
+        return cursor.rowcount > 0
+
+
+async def notify_consultation_paid(message: Message, bot: Bot, profile: dict[str, Any] | None) -> None:
+    user = message.from_user
+    name = html.escape(str((profile or {}).get("name") or user.full_name or "Клиент"))
+    username = getattr(user, "username", None)
+    if username:
+        client_contact = f"{name} (@{html.escape(username)})"
+    else:
+        client_contact = f'<a href="tg://user?id={user.id}">{name}</a>'
+    if profile:
+        aspects = "\n".join(f"• {html.escape(str(item))}" for item in profile.get("aspects", [])) or "—"
+        summary = (
+            f"Дата рождения: {html.escape(str(profile.get('date', '—')))}\n"
+            f"Точное время рождения: {html.escape(str(profile.get('time', '—')))}\n"
+            f"Город рождения: {html.escape(str(profile.get('city', '—')))}\n"
+            f"Луна: {html.escape(str(profile.get('sign', '—')))}, {html.escape(str(profile.get('house', '—')))} дом\n"
+            f"Аспекты Луны:\n{aspects}"
+        )
+    else:
+        summary = "Данные рождения не найдены в сохранённом профиле."
+    notification = (
+        f"🔮 <b>Оплачена персональная консультация — {CONSULT_PRICE_LABEL} ₽</b>\n"
+        f"Клиент: {client_contact}\nTelegram ID: <code>{user.id}</code>\n{summary}"
+    )
+    recipient_ids = dict.fromkeys(user_id for user_id in (ASTROLOGER_ID, ADMIN_ID) if user_id)
+    for recipient_id in recipient_ids:
+        try:
+            await bot.send_message(recipient_id, notification)
+        except Exception:
+            log.exception("Could not send paid consultation notice to Telegram user %s", recipient_id)
+
+
 @router.message(F.successful_payment)
 async def successful_payment(message: Message, bot: Bot) -> None:
     payment = message.successful_payment
-    if payment.invoice_payload != f"lunar-guide:{message.from_user.id}" or payment.total_amount != GUIDE_PRICE * 100 or payment.currency != "RUB":
-        log.error("Payment validation mismatch for user %s", message.from_user.id)
+    user_id = message.from_user.id
+    guide_payload = f"lunar-guide:{user_id}"
+    consultation_payload = f"lunar-consult:{user_id}"
+
+    if payment.invoice_payload == guide_payload:
+        expected_amount = GUIDE_PRICE * 100
+        if payment.total_amount != expected_amount or payment.currency != "RUB":
+            log.error("Guide payment validation mismatch for user %s", user_id)
+            return
+        if await record_successful_payment(payment, user_id):
+            await deliver_report(message, bot, user_id)
         return
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute("INSERT OR IGNORE INTO payments(telegram_payment_charge_id,user_id,total_amount,currency) VALUES(?,?,?,?)",
-                         (payment.telegram_payment_charge_id, message.from_user.id, payment.total_amount, payment.currency))
-        await db.commit()
-    await deliver_report(message, bot, message.from_user.id)
+
+    if payment.invoice_payload == consultation_payload:
+        expected_amount = CONSULT_PRICE * 100
+        if payment.total_amount != expected_amount or payment.currency != "RUB":
+            log.error("Consultation payment validation mismatch for user %s", user_id)
+            return
+        if not await record_successful_payment(payment, user_id):
+            log.info("Ignoring duplicate consultation payment update for user %s", user_id)
+            return
+        profile = await fetch_profile(user_id)
+        await notify_consultation_paid(message, bot, profile)
+        await message.answer(
+            f"Оплата консультации ({CONSULT_PRICE_LABEL} ₽) успешно прошла! ✨ "
+            "Ваша натальная карта и данные рождения уже переданы астрологу. "
+            "Нажмите на кнопку ниже, чтобы написать в личный чат и начать разбор 👇",
+            reply_markup=consultation_success_keyboard(),
+        )
+        return
+
+    log.error("Unknown successful payment payload for user %s", user_id)
 
 
 @router.message()
@@ -1149,11 +1307,17 @@ async def automatic_entry_keyboard(message: Message) -> None:
 
 async def main() -> None:
     global BOT_TOKEN, LLM_API_KEY, LLM_BASE_URL, LLM_MODEL
+    global ASTROLOGER_ID, ASTROLOGER_USERNAME, CONSULT_PRICE, CONSULT_PRICE_LABEL, CONSULT_MENU_LABEL
     load_dotenv(ROOT / ".env", override=True)
     BOT_TOKEN = os.getenv("BOT_TOKEN", "")
     LLM_API_KEY = os.getenv("LLM_API_KEY", "")
     LLM_BASE_URL = os.getenv("LLM_BASE_URL", "")
     LLM_MODEL = os.getenv("LLM_MODEL", "gpt-4o-mini")
+    ASTROLOGER_ID = int(os.getenv("ASTROLOGER_ID", "0") or 0)
+    ASTROLOGER_USERNAME = os.getenv("ASTROLOGER_USERNAME", "").strip()
+    CONSULT_PRICE = int(os.getenv("CONSULT_PRICE", "1500") or 1500)
+    CONSULT_PRICE_LABEL = f"{CONSULT_PRICE:,}".replace(",", " ")
+    CONSULT_MENU_LABEL = f"🔮 Личный разбор с астрологом — {CONSULT_PRICE_LABEL} ₽"
     if not BOT_TOKEN:
         raise RuntimeError("Заполните BOT_TOKEN в .env")
     await init_db()
