@@ -56,6 +56,7 @@ LLM_MODEL = os.getenv("LLM_MODEL", "gpt-4o-mini")
 DB_PATH = ROOT / "data" / "bot.sqlite3"
 KNOWLEDGE_PATH = ROOT / "data" / "moon_knowledge.json"
 REPORT_DIR = ROOT / "reports"
+ASSET_DIR = ROOT / "assets"
 SKYFIELD_DATA_DIR = ROOT / "data" / "skyfield"
 
 router = Router()
@@ -68,17 +69,49 @@ class Intake(StatesGroup):
 
 def subscription_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Подписаться на канал", url=CHANNEL_URL)],
-        [InlineKeyboardButton(text="Проверить подписку", callback_data="check_subscription")],
+        [InlineKeyboardButton(text="📢 Подписаться на канал", url=CHANNEL_URL)],
+        [InlineKeyboardButton(text="✅ Я подписался, получить разбор", callback_data="check_subscription")],
+    ])
+
+
+def main_menu_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🌙 Рассчитать мой Лунный код (Бесплатно)", callback_data="calculate")],
+        [InlineKeyboardButton(text="📖 Что входит в полный PDF-разбор (18 разделов)", callback_data="show_sections")],
+        [InlineKeyboardButton(text="💫 Мои расчёты", callback_data="my_calculations")],
+        [InlineKeyboardButton(text="👩‍💼 Связаться с астрологом", url=CHANNEL_URL)],
+    ])
+
+
+def menu_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="🏠 В главное меню", callback_data="main_menu")
+    ]])
+
+
+def cancel_keyboard(*, unknown_time: bool = False) -> InlineKeyboardMarkup:
+    rows = []
+    if unknown_time:
+        rows.append([InlineKeyboardButton(text="🕰 Не знаю точное время (12:00)", callback_data="unknown_time")])
+    rows.append([InlineKeyboardButton(text="❌ Отмена / В меню", callback_data="cancel_to_menu")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def saved_calculation_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔄 Использовать прошлые данные", callback_data="reuse_profile")],
+        [InlineKeyboardButton(text="✏️ Ввести заново", callback_data="enter_new_profile")],
+        [InlineKeyboardButton(text="❌ Отмена / В меню", callback_data="cancel_to_menu")],
     ])
 
 
 def payment_keyboard() -> InlineKeyboardMarkup:
-    label = f"Оплатить {GUIDE_PRICE} ₽"
-    callback_data = "buy_guide" if PROVIDER_TOKEN else "test_buy_guide"
-    return InlineKeyboardMarkup(inline_keyboard=[[
-        InlineKeyboardButton(text=label, callback_data=callback_data)
-    ]])
+    payment_callback = "buy_guide" if PROVIDER_TOKEN else "test_buy_guide"
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=f"💎 Получить полный PDF-разбор (18 разделов) — {GUIDE_PRICE} ₽", callback_data=payment_callback)],
+        [InlineKeyboardButton(text="📋 Посмотреть список всех 18 разделов", callback_data="show_sections")],
+        [InlineKeyboardButton(text="🏠 В главное меню", callback_data="main_menu")],
+    ])
 
 
 async def is_subscribed(bot: Bot, user_id: int) -> bool:
@@ -132,6 +165,8 @@ def pick(mapping: Any, key: str, fallback: str = "") -> str:
     if not isinstance(mapping, dict):
         return fallback
     value = mapping.get(key, mapping.get(key.lower(), fallback))
+    if isinstance(value, dict):
+        value = value.get("text", fallback)
     return str(value) if value else fallback
 
 
@@ -298,61 +333,116 @@ async def fetch_profile(user_id: int) -> dict[str, Any] | None:
 
 async def send_free_reading(message: Message, state: FSMContext, profile: dict[str, Any]) -> None:
     knowledge = load_knowledge()
-    signs = knowledge.get("signs", {})
-    houses = knowledge.get("houses", {})
-    sign_text = pick(signs, profile["sign"], "Для этого знака пока не добавлен авторский текст.")
-    house_text = pick(houses, str(profile["house"]), "Для этого дома пока не добавлен авторский текст.")
-    relaxation = str(knowledge.get("relaxation", "")) or "Попробуйте замедлиться, прислушаться к телу и выбрать спокойный ритуал, который возвращает ощущение безопасности."
-    aspects = "\n".join(f"• {a}" for a in profile["aspects"])
-    text = (f"🌙 <b>Ваш Лунный код, {html.escape(profile['name'])}</b>\n\n"
-            f"<b>Луна в знаке {html.escape(profile['sign'])}</b>\n{html.escape(sign_text)}\n\n"
-            f"<b>Луна в {profile['house']} доме</b>\n{html.escape(house_text)}\n\n"
-            f"<b>Аспекты Луны</b>\n{html.escape(aspects)}\n\n"
-            f"<b>Блок «Расслабление»</b>\n{html.escape(relaxation)}")
+    sign_text = pick(knowledge.get("signs", {}), profile["sign"], "Авторское описание этого знака пока не добавлено.")
+    house_text = pick(knowledge.get("houses", {}), str(profile["house"]), "Авторское описание этого дома пока не добавлено.")
+    relaxation_data = knowledge.get("relaxation", {})
+    relaxation = relaxation_data.get("text", "") if isinstance(relaxation_data, dict) else str(relaxation_data)
+    if not relaxation:
+        relaxation = "Авторский блок «Расслабление» пока не загружен."
+    aspects = "\n".join(f"• {a}" for a in profile.get("aspects", [])) or "Точных основных аспектов Луны не найдено."
+    chart_text = (
+        f"🌙 <b>Ваш Лунный код, {html.escape(profile['name'])}</b>\n\n"
+        f"<b>Луна в знаке {html.escape(profile['sign'])}</b>\n{html.escape(sign_text)}\n\n"
+        f"<b>Луна в {profile['house']} доме</b>\n{html.escape(house_text)}\n\n"
+        f"<b>Аспекты Луны</b>\n{html.escape(aspects)}"
+    )
+    relaxation_text = f"<b>Блок «Расслабление»</b>\n{html.escape(relaxation)}"
     if not PROVIDER_TOKEN:
-        text += ("\n\n<i>Реальная оплата пока не подключена: кнопка ниже запускает тестовую генерацию без списания. "
-                 "Без LLM_API_KEY результат будет демонстрационным.</i>")
-    await message.answer(text, reply_markup=payment_keyboard())
+        relaxation_text += (
+            "\n\n<i>Реальная оплата пока не подключена: кнопка ниже запускает бесплатную тестовую генерацию. "
+            "Для полного текста необходимо настроить LLM_API_KEY.</i>"
+        )
+    await message.answer(chart_text)
+    await message.answer(relaxation_text, reply_markup=payment_keyboard())
     await state.clear()
+
+
+def author_aspect_excerpts(profile: dict[str, Any], knowledge: dict[str, Any]) -> list[dict[str, str]]:
+    aspect_library = knowledge.get("aspects", {})
+    excerpts = []
+    for calculated in profile.get("aspects", []):
+        calculated_text = str(calculated)
+        aspect_name = next((name for name in aspect_library if name.casefold() in calculated_text.casefold()), None)
+        if aspect_name:
+            excerpts.append({
+                "рассчитанный аспект": calculated_text,
+                "авторская трактовка": pick(aspect_library, aspect_name, ""),
+            })
+    return excerpts
 
 
 async def generate_llm_report(profile: dict[str, Any]) -> list[tuple[str, str]]:
     if not LLM_API_KEY:
-        raise RuntimeError("LLM_API_KEY не настроен")
+        raise RuntimeError("LLM_API_KEY не настроен; персональный платный отчёт без LLM API не создаётся.")
     knowledge = load_knowledge()
+    relaxation = knowledge.get("relaxation", {})
+    relaxation_text = relaxation.get("text", "") if isinstance(relaxation, dict) else str(relaxation)
     context = {
-        "знак Луны": profile["sign"], "дом Луны": profile["house"],
-        "аспекты Луны": profile["aspects"], "авторский текст знака": pick(knowledge.get("signs"), profile["sign"]),
-        "авторский текст дома": pick(knowledge.get("houses"), str(profile["house"])),
-        "авторский блок расслабления": knowledge.get("relaxation", ""),
+        "имя клиента": profile["name"],
+        "точные рассчитанные данные Луны": {
+            "знак": profile["sign"], "дом": profile["house"], "аспекты": profile["aspects"],
+        },
+        "авторская страница для знака": pick(knowledge.get("signs"), profile["sign"]),
+        "авторская страница для дома": pick(knowledge.get("houses"), str(profile["house"])),
+        "авторские выдержки для рассчитанных аспектов": author_aspect_excerpts(profile, knowledge),
+        "авторский блок расслабления": relaxation_text,
     }
-    headings = REPORT_HEADINGS
-    prompt = ("Напиши бережный, содержательный персональный астрологический разбор на русском языке. "
-              "Это интерпретация для саморефлексии, не медицинский или научный диагноз. Не выдумывай положения карты. "
-              "Раскрой каждый из 18 пунктов ниже отдельным разделом, по 1–3 абзаца, конкретно связывая интерпретацию "
-              "со знаком, домом, аспектами и авторскими выдержками. Верни только JSON-массив объектов с ключами title и text.\n"
-              f"Данные: {json.dumps(context, ensure_ascii=False)}\n"
-              "Пункты: " + "\n".join(f"{i+1}. {title}" for i, title in enumerate(headings)))
-    client = AsyncOpenAI(api_key=LLM_API_KEY, base_url=LLM_BASE_URL or None)
-    response = await client.chat.completions.create(
-        model=LLM_MODEL,
-        messages=[{"role": "system", "content": "Ты опытный редактор персональных астрологических материалов."}, {"role": "user", "content": prompt}],
-        temperature=0.7,
+    prompt = (
+        "Составь глубокий, бережный, тёплый персональный астрологический разбор на русском языке для клиента, "
+        "чьё имя и точные положения карты приведены ниже. Авторские выдержки — единственный источник трактовок: "
+        "бережно опирайся на них, не цитируй длинными фрагментами и не придумывай другие положения карты. "
+        "Астрология подаётся как символический материал для саморефлексии, не как наука, диагноз или предсказание. "
+        "Верни строго JSON-массив из 18 объектов с полями title и text, без markdown и вступления. "
+        "Сохрани заголовки и их порядок точно как в списке. Для каждого пункта напиши ровно два содержательных "
+        "абзаца по 70–110 слов каждый, разделяя абзацы пустой строкой. Связывай общее значение темы с личными "
+        "потребностями клиента, его знаком, домом, фактически рассчитанными аспектами и авторским контекстом. "
+        "Не повторяй одни и те же советы между разделами; пиши конкретно, мягко и без категоричных утверждений.\n\n"
+        f"ДАННЫЕ И АВТОРСКИЙ КОНТЕКСТ:\n{json.dumps(context, ensure_ascii=False)}\n\n"
+        "18 РАЗДЕЛОВ:\n" + "\n".join(f"{index}. {title}" for index, title in enumerate(REPORT_HEADINGS, 1))
     )
-    raw = response.choices[0].message.content or "[]"
+    client = AsyncOpenAI(
+        api_key=LLM_API_KEY,
+        base_url=LLM_BASE_URL or None,
+        timeout=120.0,
+        max_retries=2,
+    )
+    try:
+        response = await client.chat.completions.create(
+            model=LLM_MODEL,
+            messages=[
+                {"role": "system", "content": "Ты бережный автор персональных лунных разборов и точно следуешь структуре JSON."},
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0.7,
+            max_tokens=10000,
+        )
+    finally:
+        await client.close()
+    raw = response.choices[0].message.content or ""
     try:
         sections = json.loads(raw)
     except json.JSONDecodeError:
         found = re.search(r"\[.*\]", raw, re.S)
         if not found:
-            raise RuntimeError("LLM вернула некорректный формат")
+            raise RuntimeError("LLM вернула некорректный JSON")
         sections = json.loads(found.group())
-    if not isinstance(sections, list) or len(sections) != 18:
-        raise RuntimeError("LLM вернула неполный разбор (ожидалось 18 разделов)")
-    return [(str(x["title"]), str(x["text"])) for x in sections]
+    if not isinstance(sections, list) or len(sections) != len(REPORT_HEADINGS):
+        raise RuntimeError(f"LLM вернула {len(sections) if isinstance(sections, list) else 0} разделов вместо 18")
+    validated = []
+    for index, (expected_title, item) in enumerate(zip(REPORT_HEADINGS, sections), 1):
+        if not isinstance(item, dict) or not isinstance(item.get("text"), str):
+            raise RuntimeError(f"Некорректный формат в разделе {index}")
+        actual_title = re.sub(r"^\s*\d+[.)]\s*", "", str(item.get("title", ""))).strip()
+        if actual_title != expected_title:
+            raise RuntimeError(f"Нарушен порядок или заголовок раздела {index}: {actual_title!r}")
+        paragraphs = _paragraphs(item["text"])
+        if len(paragraphs) < 2 or any(len(paragraph.split()) < 40 for paragraph in paragraphs[:2]):
+            raise RuntimeError(f"Раздел {index} должен содержать два развёрнутых абзаца")
+        validated.append((expected_title, "\n\n".join(paragraphs)))
+    return validated
 
 
-def _font_paths() -> tuple[Path, Path]:
+def _font_paths() -> tuple[Path, Path, Path, Path]:
     override = os.getenv("PDF_FONT_PATH", "").strip()
     regular_candidates = ([Path(override)] if override else []) + [
         Path("C:/Windows/Fonts/arial.ttf"),
@@ -366,91 +456,185 @@ def _font_paths() -> tuple[Path, Path]:
         Path("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"),
         Path("/usr/share/fonts/dejavu/DejaVuSans-Bold.ttf"),
     ]
+    serif_candidates = [
+        Path("C:/Windows/Fonts/georgia.ttf"),
+        Path("C:/Windows/Fonts/times.ttf"),
+        Path("/System/Library/Fonts/Supplemental/Georgia.ttf"),
+        Path("/usr/share/fonts/truetype/dejavu/DejaVuSerif.ttf"),
+        Path("/usr/share/fonts/dejavu/DejaVuSerif.ttf"),
+    ]
+    serif_bold_candidates = [
+        Path("C:/Windows/Fonts/georgiab.ttf"),
+        Path("C:/Windows/Fonts/timesbd.ttf"),
+        Path("/System/Library/Fonts/Supplemental/Georgia Bold.ttf"),
+        Path("/usr/share/fonts/truetype/dejavu/DejaVuSerif-Bold.ttf"),
+        Path("/usr/share/fonts/dejavu/DejaVuSerif-Bold.ttf"),
+    ]
     regular = next((path for path in regular_candidates if path.is_file()), None)
     if regular is None:
         raise RuntimeError("Для кириллического PDF нужен Arial или DejaVu Sans. Укажите PDF_FONT_PATH в .env.")
+    serif = next((path for path in serif_candidates if path.is_file()), regular)
     bold = next((path for path in bold_candidates if path.is_file()), regular)
-    return regular, bold
+    serif_bold = next((path for path in serif_bold_candidates if path.is_file()), serif)
+    return regular, bold, serif, serif_bold
+
+
+DARK_BROWN = (64, 48, 43)       # PDF source text: #40302B
+ACCENT_BROWN = (101, 76, 66)    # PDF source headings: #654C42
+WARM_TAUPE = (171, 149, 139)    # PDF source ornaments: #AB958B
+PAGE_BG = ASSET_DIR / "moon_page_background.jpg"
+COVER_BG = ASSET_DIR / "moon_cover_background.png"
+COVER_PORTRAIT = ASSET_DIR / "moon_cover_portrait.png"
 
 
 class LunarPDF(FPDF):
+    def header(self) -> None:
+        if self.page_no() == 1:
+            self.image(str(COVER_BG), x=0, y=0, w=210, h=297)
+            return
+        self.image(str(PAGE_BG), x=0, y=0, w=210, h=297)
+        self.set_draw_color(*WARM_TAUPE)
+        self.set_line_width(0.25)
+        self.line(14, 15, 196, 15)
+        self.set_xy(14, 7)
+        self.set_text_color(*ACCENT_BROWN)
+        self.set_font("Lunar", size=7)
+        self.cell(182, 5, "LUNA  /  PERSONAL GUIDE", align="L")
+        self.set_y(22)
+
     def footer(self) -> None:
-        self.set_y(-15)
+        if self.page_no() == 1:
+            return
+        self.set_y(-14)
         self.set_font("Lunar", size=8)
-        self.set_text_color(135, 127, 149)
-        self.cell(0, 8, f"ЛУННЫЙ КОД  ·  {self.page_no()}/{{nb}}", align="C")
+        self.set_text_color(*ACCENT_BROWN)
+        self.cell(0, 7, f"— {self.page_no() - 1} —", align="C")
+
+
+def _paragraphs(text: str) -> list[str]:
+    return [part.strip() for part in re.split(r"\n\s*\n", text.strip()) if part.strip()]
 
 
 def render_pdf(profile: dict[str, Any], sections: list[tuple[str, str]]) -> Path:
-    regular_font, bold_font = _font_paths()
+    regular_font, bold_font, serif_font, serif_bold_font = _font_paths()
     pdf = LunarPDF(format="A4")
     pdf.alias_nb_pages()
     pdf.set_title(f"Лунный код — {profile['name']}")
     pdf.set_author("Лунный код")
     pdf.add_font("Lunar", fname=str(regular_font))
     pdf.add_font("Lunar", style="B", fname=str(bold_font))
-    pdf.set_margins(20, 20, 20)
-    pdf.set_auto_page_break(auto=True, margin=20)
+    pdf.add_font("LunarSerif", fname=str(serif_font))
+    pdf.add_font("LunarSerif", style="B", fname=str(serif_bold_font))
+    pdf.set_margins(18, 21, 18)
+    pdf.set_auto_page_break(auto=True, margin=19)
 
-    # Full-page dark cover with a restrained lunar motif.
+    # Cover mirrors the author's pale marble composition and portrait placement.
     pdf.add_page()
-    pdf.set_fill_color(34, 28, 54)
-    pdf.rect(0, 0, 210, 297, style="F")
-    pdf.set_draw_color(210, 183, 135)
-    pdf.set_line_width(0.5)
-    pdf.ellipse(135, 25, 48, 48, style="D")
-    pdf.ellipse(145, 35, 48, 48, style="D")
-    pdf.set_text_color(226, 204, 162)
-    pdf.set_font("Lunar", style="B", size=13)
-    pdf.set_xy(22, 28)
-    pdf.cell(166, 12, "Л У Н Н Ы Й   К О Д", align="C")
-    pdf.set_text_color(255, 255, 255)
-    pdf.set_font("Lunar", style="B", size=27)
-    pdf.set_xy(24, 98)
-    pdf.multi_cell(162, 15, "Ваша Луна.\nВаш внутренний мир.", align="C")
-    pdf.set_text_color(211, 204, 221)
-    pdf.set_font("Lunar", size=12)
-    pdf.set_xy(28, 145)
-    pdf.multi_cell(154, 8, "Персональный путеводитель по эмоциональным потребностям, опорам и внутренним реакциям.", align="C")
-    pdf.set_draw_color(210, 183, 135)
-    pdf.line(82, 184, 128, 184)
-    pdf.set_text_color(255, 255, 255)
-    pdf.set_font("Lunar", style="B", size=15)
-    pdf.set_xy(24, 199)
-    pdf.cell(162, 10, str(profile["name"]), align="C")
-    pdf.set_text_color(226, 204, 162)
-    pdf.set_font("Lunar", size=11)
-    pdf.set_xy(24, 214)
-    pdf.cell(162, 8, f"Луна в знаке {profile['sign']} · {profile['house']} дом", align="C")
-    pdf.set_text_color(211, 204, 221)
-    pdf.set_xy(24, 224)
-    pdf.cell(162, 8, f"Рождение: {profile['date']}, {profile['time']}", align="C")
+    pdf.image(str(COVER_PORTRAIT), x=0, y=79, w=117.5, h=97)
+    pdf.set_text_color(*ACCENT_BROWN)
+    pdf.set_font("Lunar", size=7.5)
+    pdf.set_xy(126, 59)
+    pdf.cell(75, 5, "LUNA  /  PERSONAL GUIDE", align="C")
+    pdf.set_text_color(*DARK_BROWN)
+    pdf.set_font("LunarSerif", size=26)
+    pdf.set_xy(122, 75)
+    pdf.cell(82, 13, "Луна", align="C")
+    pdf.set_font("LunarSerif", size=12)
+    pdf.set_xy(119, 91)
+    pdf.multi_cell(88, 7, "ПЕРСОНАЛЬНЫЙ ГАЙД", align="C", new_x="LMARGIN", new_y="NEXT")
+    pdf.set_draw_color(*WARM_TAUPE)
+    pdf.set_line_width(0.35)
+    pdf.line(137, 111, 187, 111)
+    pdf.set_text_color(*DARK_BROWN)
+    pdf.set_font("LunarSerif", style="B", size=13)
+    pdf.set_xy(121, 118)
+    pdf.multi_cell(84, 7, str(profile["name"]), align="C", new_x="LMARGIN", new_y="NEXT")
+    pdf.set_text_color(*ACCENT_BROWN)
+    pdf.set_font("Lunar", size=7.7)
+    pdf.set_xy(120, 132)
+    city = str(profile.get("city", ""))
+    birth_lines = f"Рождение: {profile['date']} · {profile['time']}"
+    if city:
+        birth_lines += f"\n{city}"
+    pdf.multi_cell(86, 4.8, birth_lines, align="C", new_x="LMARGIN", new_y="NEXT")
+    pdf.set_draw_color(*WARM_TAUPE)
+    pdf.line(137, pdf.get_y() + 3, 187, pdf.get_y() + 3)
+    pdf.set_text_color(*DARK_BROWN)
+    pdf.set_font("LunarSerif", size=10)
+    pdf.set_xy(119, pdf.get_y() + 7)
+    pdf.multi_cell(88, 5.5, f"Луна в знаке {profile['sign']}\n{profile['house']} дом", align="C", new_x="LMARGIN", new_y="NEXT")
+    aspect_summary = "\n".join(str(x) for x in profile.get("aspects", [])) or "Основные аспекты не обнаружены"
+    pdf.set_text_color(*ACCENT_BROWN)
+    pdf.set_font("Lunar", size=7)
+    pdf.set_xy(119, pdf.get_y() + 2)
+    pdf.multi_cell(88, 4.1, "АСПЕКТЫ ЛУНЫ\n" + aspect_summary, align="C", new_x="LMARGIN", new_y="NEXT")
 
+    # A designed chart-summary page before the 18-chapter analysis.
     pdf.add_page()
-    pdf.set_text_color(54, 45, 73)
-    pdf.set_font("Lunar", style="B", size=20)
-    pdf.multi_cell(0, 11, "Ваш лунный разбор", new_x="LMARGIN", new_y="NEXT")
-    pdf.ln(2)
-    pdf.set_text_color(105, 96, 119)
-    pdf.set_font("Lunar", size=10)
-    pdf.multi_cell(0, 6, "Материал создан по указанным данным рождения и предназначен для самонаблюдения и бережного диалога с собой.", new_x="LMARGIN", new_y="NEXT")
+    pdf.set_text_color(*ACCENT_BROWN)
+    pdf.set_font("Lunar", style="B", size=8)
+    pdf.cell(0, 6, "ВАША НАТАЛЬНАЯ ЛУНА", new_x="LMARGIN", new_y="NEXT")
+    pdf.set_text_color(*DARK_BROWN)
+    pdf.set_font("LunarSerif", size=22)
+    pdf.multi_cell(0, 11, "Карта внутреннего мира", new_x="LMARGIN", new_y="NEXT")
+    pdf.set_draw_color(*WARM_TAUPE)
+    pdf.line(18, pdf.get_y() + 1, 192, pdf.get_y() + 1)
+    pdf.ln(7)
+    pdf.set_font("LunarSerif", style="B", size=14)
+    pdf.set_text_color(*DARK_BROWN)
+    pdf.multi_cell(0, 8, f"{profile['name']} · Луна в {profile['sign']}, {profile['house']} дом", new_x="LMARGIN", new_y="NEXT")
+    pdf.set_font("Lunar", size=9.5)
+    pdf.set_text_color(*DARK_BROWN)
+    pdf.multi_cell(0, 5.8, "Этот персональный разбор соединяет рассчитанные положения Луны с авторскими трактовками. Читайте его как бережный материал для самонаблюдения, а не как диагноз или неизменное предсказание.", new_x="LMARGIN", new_y="NEXT")
     pdf.ln(5)
-    for index, (title, text) in enumerate(sections, 1):
-        pdf.set_text_color(164, 127, 72)
-        pdf.set_font("Lunar", style="B", size=9)
-        pdf.cell(0, 6, f"РАЗДЕЛ {index:02d}", new_x="LMARGIN", new_y="NEXT")
-        pdf.set_text_color(54, 45, 73)
-        pdf.set_font("Lunar", style="B", size=14)
-        pdf.multi_cell(0, 8, title, new_x="LMARGIN", new_y="NEXT")
-        pdf.set_text_color(54, 49, 64)
-        pdf.set_font("Lunar", size=10)
-        pdf.multi_cell(0, 6, text.strip(), new_x="LMARGIN", new_y="NEXT")
-        pdf.ln(5)
-    pdf.ln(3)
-    pdf.set_text_color(125, 116, 137)
-    pdf.set_font("Lunar", size=8)
-    pdf.multi_cell(0, 5, "Астрологические трактовки носят ознакомительный характер и не являются научной, медицинской или психологической диагностикой.", new_x="LMARGIN", new_y="NEXT")
+    pdf.set_font("Lunar", style="B", size=8)
+    pdf.set_text_color(*ACCENT_BROWN)
+    pdf.cell(0, 6, "АСПЕКТЫ ЛУНЫ", new_x="LMARGIN", new_y="NEXT")
+    pdf.set_font("Lunar", size=9)
+    pdf.set_text_color(*DARK_BROWN)
+    pdf.multi_cell(0, 5.2, "\n".join(f"• {a}" for a in profile.get("aspects", [])) or "Основные аспекты не обнаружены.", new_x="LMARGIN", new_y="NEXT")
+    pdf.ln(4)
+    pdf.set_draw_color(*WARM_TAUPE)
+    pdf.line(18, pdf.get_y(), 192, pdf.get_y())
+    pdf.ln(5)
+    pdf.set_font("LunarSerif", size=15)
+    pdf.set_text_color(*DARK_BROWN)
+    pdf.cell(0, 8, "Содержание", new_x="LMARGIN", new_y="NEXT")
+    pdf.ln(2)
+    for index, title in enumerate(REPORT_HEADINGS, 1):
+        pdf.set_text_color(*ACCENT_BROWN)
+        pdf.set_font("Lunar", size=8.5)
+        pdf.cell(10, 5, f"{index:02d}")
+        pdf.set_text_color(*DARK_BROWN)
+        pdf.cell(0, 5, title, new_x="LMARGIN", new_y="NEXT")
 
+    pdf.add_page()
+    for index, (title, content) in enumerate(sections, 1):
+        if pdf.will_page_break(38):
+            pdf.add_page()
+        pdf.ln(4)
+        pdf.set_text_color(*WARM_TAUPE)
+        pdf.set_font("Lunar", style="B", size=8)
+        pdf.cell(0, 5, f"ГЛАВА {index:02d}  /  ЛУННЫЙ КОД", new_x="LMARGIN", new_y="NEXT")
+        pdf.set_text_color(*DARK_BROWN)
+        pdf.set_font("LunarSerif", size=16)
+        pdf.multi_cell(0, 8, title, new_x="LMARGIN", new_y="NEXT")
+        pdf.set_draw_color(*WARM_TAUPE)
+        pdf.line(18, pdf.get_y() + 1, 47, pdf.get_y() + 1)
+        pdf.ln(5)
+        pdf.set_text_color(*DARK_BROWN)
+        pdf.set_font("Lunar", size=9.5)
+        paragraphs = _paragraphs(content)
+        for paragraph in paragraphs:
+            pdf.multi_cell(0, 5.4, paragraph, new_x="LMARGIN", new_y="NEXT")
+            pdf.ln(3)
+        pdf.set_draw_color(*WARM_TAUPE)
+        pdf.line(18, pdf.get_y() + 1, 192, pdf.get_y() + 1)
+
+    pdf.ln(5)
+    pdf.set_text_color(*ACCENT_BROWN)
+    pdf.set_font("Lunar", size=8)
+    pdf.multi_cell(0, 4.8, "Астрологические трактовки носят ознакомительный характер и не являются медицинской или психологической диагностикой.", new_x="LMARGIN", new_y="NEXT")
     REPORT_DIR.mkdir(parents=True, exist_ok=True)
     path = REPORT_DIR / f"report_{int(profile['user_id'])}_{int(time.time())}.pdf"
     pdf.output(str(path))
@@ -458,41 +642,120 @@ def render_pdf(profile: dict[str, Any], sections: list[tuple[str, str]]) -> Path
 
 
 @router.message(CommandStart())
-async def start(message: Message, state: FSMContext, bot: Bot) -> None:
+async def start(message: Message, state: FSMContext) -> None:
     await state.clear()
     await message.answer(
         f"Привет! Здесь можно получить <b>бесплатный мини-разбор натальной Луны</b>, "
         f"а также приобрести полный персональный PDF-разбор на 18 разделов за <b>{GUIDE_PRICE} ₽</b> "
-        "— цифровой информационно-аналитический продукт."
+        "— цифровой информационно-аналитический продукт.\n\nВыберите, с чего начнём:",
+        reply_markup=main_menu_keyboard(),
     )
-    if await ensure_subscription(message, bot):
+
+
+async def ask_for_calculation(message: Message, user_id: int, state: FSMContext) -> None:
+    profile = await fetch_profile(user_id)
+    if profile:
+        await message.answer(
+            f"Нашёл ваш прошлый расчёт: Луна в знаке <b>{html.escape(profile['sign'])}</b>, "
+            f"{profile['house']} дом. Использовать сохранённые данные или заполнить анкету заново?",
+            reply_markup=saved_calculation_keyboard(),
+        )
+    else:
         await begin_intake(message, state)
+
+
+@router.callback_query(F.data == "calculate")
+async def calculate_callback(callback: CallbackQuery, state: FSMContext, bot: Bot) -> None:
+    await callback.answer()
+    if not await is_subscribed(bot, callback.from_user.id):
+        await callback.message.answer(
+            "Чтобы получить бесплатный расчёт, подпишитесь на канал и затем подтвердите подписку.",
+            reply_markup=subscription_keyboard(),
+        )
+        return
+    await ask_for_calculation(callback.message, callback.from_user.id, state)
 
 
 @router.callback_query(F.data == "check_subscription")
 async def check_subscription(callback: CallbackQuery, state: FSMContext, bot: Bot) -> None:
     if await is_subscribed(bot, callback.from_user.id):
         await callback.answer("Подписка подтверждена")
-        await callback.message.edit_text("Спасибо, подписка подтверждена! Начинаем ваш разбор 🌙")
-        await begin_intake(callback.message, state)
+        await callback.message.answer("Спасибо, подписка подтверждена! Продолжаем 🌙")
+        await ask_for_calculation(callback.message, callback.from_user.id, state)
     else:
         await callback.answer("Подписка пока не найдена", show_alert=True)
 
 
+@router.callback_query(F.data == "reuse_profile")
+async def reuse_profile(callback: CallbackQuery, state: FSMContext) -> None:
+    await callback.answer()
+    profile = await fetch_profile(callback.from_user.id)
+    if not profile:
+        await callback.message.answer("Не нашёл сохранённые данные. Заполните анкету заново.")
+        await begin_intake(callback.message, state)
+        return
+    await send_free_reading(callback.message, state, profile)
+
+
+@router.callback_query(F.data == "enter_new_profile")
+async def enter_new_profile(callback: CallbackQuery, state: FSMContext) -> None:
+    await callback.answer()
+    await state.clear()
+    await begin_intake(callback.message, state)
+
+
+@router.callback_query(F.data == "my_calculations")
+async def my_calculations(callback: CallbackQuery) -> None:
+    await callback.answer()
+    profile = await fetch_profile(callback.from_user.id)
+    if not profile:
+        await callback.message.answer("Пока нет сохранённых расчётов. Нажмите «Рассчитать мой Лунный код», чтобы создать первый.", reply_markup=menu_keyboard())
+        return
+    aspects = "\n".join(f"• {html.escape(str(item))}" for item in profile.get("aspects", [])) or "—"
+    await callback.message.answer(
+        f"💫 <b>Ваш расчёт</b>\nИмя: {html.escape(profile['name'])}\n"
+        f"Дата и время: {profile['date']} · {profile['time']}\nМесто: {html.escape(profile.get('city') or '—')}\n"
+        f"Часовой пояс: {html.escape(profile.get('timezone') or '—')}\n"
+        f"Луна: {html.escape(profile['sign'])}, {profile['house']} дом\nАспекты: {aspects}",
+        reply_markup=saved_calculation_keyboard(),
+    )
+
+
+@router.callback_query(F.data == "show_sections")
+async def show_sections(callback: CallbackQuery) -> None:
+    await callback.answer()
+    listing = "\n".join(f"{number}. {title}" for number, title in enumerate(REPORT_HEADINGS, 1))
+    await callback.message.answer(f"<b>Полный PDF-разбор включает 18 разделов:</b>\n\n{listing}", reply_markup=menu_keyboard())
+
+
+@router.callback_query(F.data == "main_menu")
+async def main_menu(callback: CallbackQuery, state: FSMContext) -> None:
+    await callback.answer()
+    await state.clear()
+    await callback.message.answer("Главное меню «Лунного кода» 🌙", reply_markup=main_menu_keyboard())
+
+
+@router.callback_query(F.data == "cancel_to_menu")
+async def cancel_to_menu(callback: CallbackQuery, state: FSMContext) -> None:
+    await callback.answer("Анкета отменена")
+    await state.clear()
+    await callback.message.answer("Анкета отменена. Вы в главном меню 🌙", reply_markup=main_menu_keyboard())
+
+
 async def begin_intake(message: Message, state: FSMContext) -> None:
     await state.set_state(Intake.name)
-    await message.answer("Как вас зовут?")
+    await message.answer("Как вас зовут?", reply_markup=cancel_keyboard())
 
 
 @router.message(Intake.name)
 async def get_name(message: Message, state: FSMContext) -> None:
     name = (message.text or "").strip()
     if not name or len(name) > 100:
-        await message.answer("Напишите, пожалуйста, имя (до 100 символов).")
+        await message.answer("Напишите, пожалуйста, имя (до 100 символов).", reply_markup=cancel_keyboard())
         return
     await state.update_data(name=name)
     await state.set_state(Intake.birth_date)
-    await message.answer("Введите дату рождения в формате ДД.ММ.ГГГГ, например 24.08.1995.")
+    await message.answer("Введите дату рождения в формате ДД.ММ.ГГГГ, например 24.08.1995.", reply_markup=cancel_keyboard())
 
 
 @router.message(Intake.birth_date)
@@ -502,12 +765,11 @@ async def get_birth_date(message: Message, state: FSMContext) -> None:
         if born.date() > date.today() or born.year < 1900:
             raise ValueError
     except ValueError:
-        await message.answer("Не удалось распознать дату. Введите её как ДД.ММ.ГГГГ.")
+        await message.answer("Не удалось распознать дату. Введите её как ДД.ММ.ГГГГ.", reply_markup=cancel_keyboard())
         return
     await state.update_data(date=born.strftime("%d.%m.%Y"))
     await state.set_state(Intake.birth_time)
-    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Не знаю точное время", callback_data="unknown_time")]])
-    await message.answer("Во сколько вы родились? Формат ЧЧ:ММ.", reply_markup=kb)
+    await message.answer("Во сколько вы родились? Формат ЧЧ:ММ.", reply_markup=cancel_keyboard(unknown_time=True))
 
 
 @router.callback_query(F.data == "unknown_time", Intake.birth_time)
@@ -515,7 +777,7 @@ async def unknown_time(callback: CallbackQuery, state: FSMContext) -> None:
     await callback.answer("Будем использовать 12:00")
     await state.update_data(time="12:00")
     await state.set_state(Intake.city)
-    await callback.message.answer("В каком городе вы родились? Укажите город и страну, если название неоднозначно.")
+    await callback.message.answer("В каком городе вы родились? Укажите город и страну, если название неоднозначно.", reply_markup=cancel_keyboard())
 
 
 @router.message(Intake.birth_time)
@@ -523,18 +785,18 @@ async def get_birth_time(message: Message, state: FSMContext) -> None:
     try:
         born_time = parse_birth_time(message.text or "")
     except ValueError:
-        await message.answer("Введите время в формате ЧЧ:ММ (например, 07:35) или нажмите кнопку «Не знаю точное время».")
+        await message.answer("Введите время в формате ЧЧ:ММ (например, 07:35) или нажмите кнопку «Не знаю точное время».", reply_markup=cancel_keyboard(unknown_time=True))
         return
     await state.update_data(time=born_time.strftime("%H:%M"))
     await state.set_state(Intake.city)
-    await message.answer("В каком городе вы родились? Укажите город и страну, если название неоднозначно.")
+    await message.answer("В каком городе вы родились? Укажите город и страну, если название неоднозначно.", reply_markup=cancel_keyboard())
 
 
 @router.message(Intake.city)
 async def get_city(message: Message, state: FSMContext, bot: Bot) -> None:
     city = (message.text or "").strip()
     if not city or len(city) > 200:
-        await message.answer("Укажите название города.")
+        await message.answer("Укажите название города.", reply_markup=cancel_keyboard())
         return
     status = await message.answer("Определяю место рождения и рассчитываю вашу карту…")
     try:
@@ -548,7 +810,7 @@ async def get_city(message: Message, state: FSMContext, bot: Bot) -> None:
         await send_free_reading(message, state, profile)
     except Exception as exc:
         log.exception("Could not prepare natal chart")
-        await status.edit_text(f"Не получилось рассчитать разбор: {html.escape(str(exc))}\nПопробуйте ещё раз — отправьте другой вариант города.")
+        await status.edit_text(f"Не получилось рассчитать разбор: {html.escape(str(exc))}\nПопробуйте ещё раз — отправьте другой вариант города.", reply_markup=cancel_keyboard())
 
 
 REPORT_HEADINGS = [
@@ -561,14 +823,6 @@ REPORT_HEADINGS = [
 ]
 
 
-def demo_report_sections(profile: dict[str, Any]) -> list[tuple[str, str]]:
-    """Non-payment preview used only when the provider token is intentionally empty."""
-    return [
-        (heading, f"В демонстрационной версии этот раздел рассматривает тему «{heading.lower()}» через ваш Лунный код: Луна в знаке {profile['sign']}, в {profile['house']} доме. Это пример оформления персонального PDF; для содержательного полного текста подключите LLM API. Используйте наблюдения как повод мягко прислушаться к своим чувствам, а не как диагноз или неизменное предсказание.")
-        for heading in REPORT_HEADINGS
-    ]
-
-
 async def deliver_report(message: Message, bot: Bot, user_id: int, *, test_mode: bool = False) -> None:
     if test_mode:
         await message.answer("Формируем ваш персональный PDF-разбор на 18 разделов, это займёт около 20–30 секунд...")
@@ -579,21 +833,27 @@ async def deliver_report(message: Message, bot: Bot, user_id: int, *, test_mode:
         await message.answer("Не нашёл сохранённые данные карты. Напишите /start и свяжитесь с администратором.")
         return
     try:
-        if test_mode and not LLM_API_KEY:
-            sections = demo_report_sections(profile)
-        else:
-            sections = await generate_llm_report(profile)
+        # Both paid and preview flows use the configured LLM. There is deliberately no demo fallback.
+        sections = await generate_llm_report(profile)
         pdf_path = await asyncio.to_thread(render_pdf, profile, sections)
-        caption = "Ваш полный персональный разбор «Лунный код» готов! 🌙"
-        await message.answer_document(FSInputFile(pdf_path), caption=caption)
-    except Exception:
+        await message.answer_document(
+            FSInputFile(pdf_path),
+            caption="Ваш полный персональный разбор «Лунный код» готов! 🌙",
+        )
+    except Exception as exc:
         log.exception("PDF generation failed for user %s", user_id)
         if test_mode:
-            await message.answer("Не удалось создать демонстрационный PDF. Оплата не производилась; проверьте шрифт и логи бота.")
+            await message.answer("Не удалось сформировать PDF-разбор через LLM API. Проверьте настройки и попробуйте позже.")
         else:
             await message.answer("Возникла техническая ошибка при создании PDF. Мы сохранили факт оплаты и скоро поможем вам.")
-            if ADMIN_ID:
-                await bot.send_message(ADMIN_ID, f"Не удалось сформировать PDF пользователю {user_id}. Проверьте логи и выполните возврат/повторную выдачу.")
+        if ADMIN_ID:
+            error_detail = html.escape(str(exc) or repr(exc))[:2500]
+            await bot.send_message(
+                ADMIN_ID,
+                f"❌ Ошибка генерации PDF для пользователя {user_id}. "
+                f"{'Тестовая генерация.' if test_mode else 'Платёж сохранён; требуется повторная выдача.'}\n"
+                f"<code>{error_detail}</code>",
+            )
 
 
 @router.callback_query(F.data == "buy_guide")
